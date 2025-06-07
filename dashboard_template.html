@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-time Trading Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1a1a1a;
+            color: #ffffff;
+            overflow-x: hidden;
+        }
+
+        .header {
+            background: #2d2d2d;
+            padding: 10px 20px;
+            border-bottom: 2px solid #333;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            color: #00ff88;
+        }
+
+        .stats {
+            display: flex;
+            gap: 20px;
+            font-size: 14px;
+        }
+
+        .stat-item {
+            display: flex;
+            flex-direction: column;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-weight: bold;
+            color: #00ff88;
+        }
+
+        .controls {
+            background: #2d2d2d;
+            padding: 15px 20px;
+            border-bottom: 1px solid #333;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .control-group label {
+            font-size: 14px;
+            white-space: nowrap;
+        }
+
+        input, select {
+            padding: 6px 10px;
+            border: 1px solid #555;
+            background: #333;
+            color: #fff;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        input:focus, select:focus {
+            outline: none;
+            border-color: #00ff88;
+        }
+
+        .btn {
+            padding: 6px 12px;
+            background: #555;
+            border: none;
+            color: #fff;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .btn:hover {
+            background: #666;
+        }
+
+        .btn.active {
+            background: #00ff88;
+            color: #000;
+        }
+
+        .table-container {
+            height: calc(100vh - 140px);
+            overflow: auto;
+            background: #1a1a1a;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #1a1a1a;
+        }
+
+        th {
+            background: #2d2d2d;
+            padding: 12px 8px;
+            text-align: left;
+            border-bottom: 2px solid #333;
+            position: sticky;
+            top: 0;
+            cursor: pointer;
+            user-select: none;
+            font-size: 13px;
+            white-space: nowrap;
+        }
+
+        th:hover {
+            background: #3d3d3d;
+        }
+
+        th.sortable::after {
+            content: ' ↕';
+            opacity: 0.5;
+        }
+
+        th.sort-asc::after {
+            content: ' ↑';
+            opacity: 1;
+            color: #00ff88;
+        }
+
+        th.sort-desc::after {
+            content: ' ↓';
+            opacity: 1;
+            color: #00ff88;
+        }
+
+        td {
+            padding: 8px;
+            border-bottom: 1px solid #333;
+            font-size: 13px;
+            white-space: nowrap;
+        }
+
+        tr:nth-child(even) {
+            background: #222;
+        }
+
+        tr:hover {
+            background: #2a2a2a;
+        }
+
+        .price-positive {
+            color: #00ff88;
+        }
+
+        .price-negative {
+            color: #ff4444;
+        }
+
+        .price-neutral {
+            color: #ffffff;
+        }
+
+        .updated {
+            animation: flash 0.5s ease-in-out;
+        }
+
+        @keyframes flash {
+            0% { background-color: #00ff88; }
+            100% { background-color: transparent; }
+        }
+
+        .connection-status {
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        .connected {
+            background: #00ff88;
+            color: #000;
+        }
+
+        .disconnected {
+            background: #ff4444;
+            color: #fff;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            
+            .control-group {
+                justify-content: space-between;
+            }
+            
+            th, td {
+                padding: 6px 4px;
+                font-size: 12px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>LIVE TRADING DASHBOARD</h1>
+        <div class="stats">
+            <div class="stat-item">
+                <span class="stat-value" id="totalSymbols">0</span>
+                <span>Total</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-value" id="activeSymbols">0</span>
+                <span>Active</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-value" id="gainers">0</span>
+                <span>Gainers</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-value" id="losers">0</span>
+                <span>Losers</span>
+            </div>
+            <div class="stat-item">
+                <span class="connection-status" id="connectionStatus">Disconnected</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="controls">
+        <div class="control-group">
+            <label>Search:</label>
+            <input type="text" id="searchInput" placeholder="Symbol name...">
+        </div>
+        
+        <div class="control-group">
+            <label>Change %:</label>
+            <select id="changeFilter">
+                <option value="all">All</option>
+                <option value="positive">Gainers</option>
+                <option value="negative">Losers</option>
+                <option value="neutral">Neutral</option>
+            </select>
+        </div>
+        
+        <div class="control-group">
+            <label>LTP Range:</label>
+            <input type="number" id="minPrice" placeholder="Min" step="0.01">
+            <input type="number" id="maxPrice" placeholder="Max" step="0.01">
+        </div>
+        
+        <div class="control-group">
+            <button class="btn" id="pauseBtn">Pause Updates</button>
+            <button class="btn" id="exportBtn">Export CSV</button>
+        </div>
+    </div>
+
+    <div class="table-container">
+        <table id="dataTable">
+            <thead>
+                <tr>
+                    <th class="sortable" data-column="symbol">Symbol</th>
+                    <th class="sortable" data-column="ltp">LTP</th>
+                    <th class="sortable" data-column="change">Change %</th>
+                    <th class="sortable" data-column="volume">Volume</th>
+                    <th class="sortable" data-column="high">High</th>
+                    <th class="sortable" data-column="low">Low</th>
+                    <th class="sortable" data-column="open">Open</th>
+                    <th>Last Update</th>
+                </tr>
+            </thead>
+            <tbody id="tableBody">
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        class TradingDashboard {
+            constructor() {
+                this.data = new Map();
+                this.filteredData = [];
+                this.sortColumn = null;
+                this.sortDirection = 'asc';
+                this.isPaused = false;
+                this.updateQueue = [];
+                
+                this.initializeElements();
+                this.setupEventListeners();
+                this.setupMockDataStream();
+                this.startUpdateLoop();
+            }
+
+            initializeElements() {
+                this.tableBody = document.getElementById('tableBody');
+                this.searchInput = document.getElementById('searchInput');
+                this.changeFilter = document.getElementById('changeFilter');
+                this.minPrice = document.getElementById('minPrice');
+                this.maxPrice = document.getElementById('maxPrice');
+                this.pauseBtn = document.getElementById('pauseBtn');
+                this.exportBtn = document.getElementById('exportBtn');
+                this.connectionStatus = document.getElementById('connectionStatus');
+                
+                // Stats elements
+                this.totalSymbols = document.getElementById('totalSymbols');
+                this.activeSymbols = document.getElementById('activeSymbols');
+                this.gainers = document.getElementById('gainers');
+                this.losers = document.getElementById('losers');
+            }
+
+            setupEventListeners() {
+                // Search and filters
+                this.searchInput.addEventListener('input', () => this.applyFilters());
+                this.changeFilter.addEventListener('change', () => this.applyFilters());
+                this.minPrice.addEventListener('input', () => this.applyFilters());
+                this.maxPrice.addEventListener('input', () => this.applyFilters());
+                
+                // Control buttons
+                this.pauseBtn.addEventListener('click', () => this.togglePause());
+                this.exportBtn.addEventListener('click', () => this.exportCSV());
+                
+                // Table sorting
+                document.querySelectorAll('th.sortable').forEach(th => {
+                    th.addEventListener('click', () => this.sortTable(th.dataset.column));
+                });
+            }
+
+            setupMockDataStream() {
+                // Simulate WebSocket connection
+                this.connectionStatus.textContent = 'Connected';
+                this.connectionStatus.className = 'connection-status connected';
+                
+                // Generate initial mock data
+                const symbols = ['RELIANCE', 'TCS', 'INFY', 'HDFC', 'ICICI', 'SBI', 'BAJAJ', 'MARUTI', 'WIPRO', 'HUL', 'TATAMOTORS', 'BHARTIARTL', 'KOTAKBANK', 'LT', 'AXISBANK'];
+                
+                symbols.forEach(symbol => {
+                    this.data.set(symbol, {
+                        symbol: symbol,
+                        ltp: Math.random() * 1000 + 100,
+                        change: (Math.random() - 0.5) * 10,
+                        volume: Math.floor(Math.random() * 1000000),
+                        high: Math.random() * 1100 + 100,
+                        low: Math.random() * 900 + 50,
+                        open: Math.random() * 1000 + 100,
+                        lastUpdate: new Date()
+                    });
+                });
+                
+                // Start mock data updates
+                setInterval(() => {
+                    if (!this.isPaused) {
+                        this.updateRandomSymbol();
+                    }
+                }, 500);
+            }
+
+            updateRandomSymbol() {
+                const symbols = Array.from(this.data.keys());
+                const randomSymbol = symbols[Math.floor(Math.random() * symbols.length)];
+                const currentData = this.data.get(randomSymbol);
+                
+                if (currentData) {
+                    const priceChange = (Math.random() - 0.5) * 5;
+                    const newLTP = Math.max(1, currentData.ltp + priceChange);
+                    const newChange = ((newLTP - currentData.open) / currentData.open) * 100;
+                    
+                    this.data.set(randomSymbol, {
+                        ...currentData,
+                        ltp: newLTP,
+                        change: newChange,
+                        volume: currentData.volume + Math.floor(Math.random() * 1000),
+                        lastUpdate: new Date()
+                    });
+                    
+                    this.updateQueue.push(randomSymbol);
+                }
+            }
+
+            startUpdateLoop() {
+                setInterval(() => {
+                    if (this.updateQueue.length > 0) {
+                        this.processUpdates();
+                    }
+                }, 100);
+            }
+
+            processUpdates() {
+                const updatedSymbols = [...new Set(this.updateQueue)];
+                this.updateQueue = [];
+                
+                this.applyFilters();
+                this.updateStats();
+                
+                // Highlight updated rows
+                updatedSymbols.forEach(symbol => {
+                    const row = document.querySelector(`tr[data-symbol="${symbol}"]`);
+                    if (row) {
+                        row.classList.add('updated');
+                        setTimeout(() => row.classList.remove('updated'), 500);
+                    }
+                });
+            }
+
+            applyFilters() {
+                const searchTerm = this.searchInput.value.toLowerCase();
+                const changeFilter = this.changeFilter.value;
+                const minPrice = parseFloat(this.minPrice.value) || 0;
+                const maxPrice = parseFloat(this.maxPrice.value) || Infinity;
+                
+                this.filteredData = Array.from(this.data.values()).filter(item => {
+                    const matchesSearch = item.symbol.toLowerCase().includes(searchTerm);
+                    const matchesChange = changeFilter === 'all' || 
+                        (changeFilter === 'positive' && item.change > 0) ||
+                        (changeFilter === 'negative' && item.change < 0) ||
+                        (changeFilter === 'neutral' && item.change === 0);
+                    const matchesPrice = item.ltp >= minPrice && item.ltp <= maxPrice;
+                    
+                    return matchesSearch && matchesChange && matchesPrice;
+                });
+                
+                if (this.sortColumn) {
+                    this.sortData();
+                }
+                
+                this.renderTable();
+            }
+
+            sortTable(column) {
+                if (this.sortColumn === column) {
+                    this.sortDirection = this.sortDirection === 'asc' ? 'desc' : 'asc';
+                } else {
+                    this.sortColumn = column;
+                    this.sortDirection = 'asc';
+                }
+                
+                // Update header indicators
+                document.querySelectorAll('th.sortable').forEach(th => {
+                    th.classList.remove('sort-asc', 'sort-desc');
+                });
+                
+                const currentHeader = document.querySelector(`th[data-column="${column}"]`);
+                currentHeader.classList.add(this.sortDirection === 'asc' ? 'sort-asc' : 'sort-desc');
+                
+                this.sortData();
+                this.renderTable();
+            }
+
+            sortData() {
+                this.filteredData.sort((a, b) => {
+                    let aVal = a[this.sortColumn];
+                    let bVal = b[this.sortColumn];
+                    
+                    if (typeof aVal === 'string') {
+                        aVal = aVal.toLowerCase();
+                        bVal = bVal.toLowerCase();
+                    }
+                    
+                    if (aVal < bVal) return this.sortDirection === 'asc' ? -1 : 1;
+                    if (aVal > bVal) return this.sortDirection === 'asc' ? 1 : -1;
+                    return 0;
+                });
+            }
+
+            renderTable() {
+                const tbody = this.tableBody;
+                const fragment = document.createDocumentFragment();
+                
+                this.filteredData.forEach(item => {
+                    const row = document.createElement('tr');
+                    row.setAttribute('data-symbol', item.symbol);
+                    
+                    const changeClass = item.change > 0 ? 'price-positive' : 
+                                       item.change < 0 ? 'price-negative' : 'price-neutral';
+                    
+                    row.innerHTML = `
+                        <td>${item.symbol}</td>
+                        <td class="${changeClass}">${item.ltp.toFixed(2)}</td>
+                        <td class="${changeClass}">${item.change.toFixed(2)}%</td>
+                        <td>${item.volume.toLocaleString()}</td>
+                        <td>${item.high.toFixed(2)}</td>
+                        <td>${item.low.toFixed(2)}</td>
+                        <td>${item.open.toFixed(2)}</td>
+                        <td>${item.lastUpdate.toLocaleTimeString()}</td>
+                    `;
+                    
+                    fragment.appendChild(row);
+                });
+                
+                tbody.innerHTML = '';
+                tbody.appendChild(fragment);
+            }
+
+            updateStats() {
+                const total = this.data.size;
+                const active = this.filteredData.length;
+                const gainers = Array.from(this.data.values()).filter(item => item.change > 0).length;
+                const losers = Array.from(this.data.values()).filter(item => item.change < 0).length;
+                
+                this.totalSymbols.textContent = total;
+                this.activeSymbols.textContent = active;
+                this.gainers.textContent = gainers;
+                this.losers.textContent = losers;
+            }
+
+            togglePause() {
+                this.isPaused = !this.isPaused;
+                this.pauseBtn.textContent = this.isPaused ? 'Resume Updates' : 'Pause Updates';
+                this.pauseBtn.classList.toggle('active', this.isPaused);
+            }
+
+            exportCSV() {
+                const headers = ['Symbol', 'LTP', 'Change %', 'Volume', 'High', 'Low', 'Open', 'Last Update'];
+                const csvContent = [
+                    headers.join(','),
+                    ...this.filteredData.map(item => [
+                        item.symbol,
+                        item.ltp.toFixed(2),
+                        item.change.toFixed(2),
+                        item.volume,
+                        item.high.toFixed(2),
+                        item.low.toFixed(2),
+                        item.open.toFixed(2),
+                        item.lastUpdate.toISOString()
+                    ].join(','))
+                ].join('\n');
+                
+                const blob = new Blob([csvContent], { type: 'text/csv' });
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `trading_data_${new Date().toISOString().slice(0, 10)}.csv`;
+                a.click();
+                window.URL.revokeObjectURL(url);
+            }
+        }
+
+        // Initialize dashboard when page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            new TradingDashboard();
+        });
+    </script>
+</body>
+</html>

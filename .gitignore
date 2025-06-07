@@ -1,0 +1,7 @@
+# Ignore token files
+fyers_token.txt
+
+# Ignore logs
+*.log 
+
+streamlit/

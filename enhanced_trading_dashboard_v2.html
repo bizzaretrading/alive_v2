@@ -1,0 +1,780 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Trading Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1a1a1a;
+            color: #ffffff;
+            overflow-x: hidden;
+        }
+
+        .header {
+            background: #2d2d2d;
+            padding: 10px 20px;
+            border-bottom: 2px solid #333;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            color: #00ff88;
+        }
+
+        .stats {
+            display: flex;
+            gap: 20px;
+            font-size: 14px;
+        }
+
+        .stat-item {
+            display: flex;
+            flex-direction: column;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-weight: bold;
+            color: #00ff88;
+        }
+
+        .controls {
+            background: #2d2d2d;
+            padding: 15px 20px;
+            border-bottom: 1px solid #333;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .control-group label {
+            font-size: 14px;
+            white-space: nowrap;
+        }
+
+        input, select {
+            padding: 6px 10px;
+            border: 1px solid #555;
+            background: #333;
+            color: #fff;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        input:focus, select:focus {
+            outline: none;
+            border-color: #00ff88;
+        }
+
+        .btn {
+            padding: 6px 12px;
+            background: #555;
+            border: none;
+            color: #fff;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .btn:hover {
+            background: #666;
+        }
+
+        .btn.active {
+            background: #00ff88;
+            color: #000;
+        }
+
+        .filter-row {
+            background: #2a2a2a;
+            padding: 10px 20px;
+            border-bottom: 1px solid #333;
+            display: grid;
+            grid-template-columns: 120px 100px 80px 100px 80px 120px 150px 80px 120px 300px;
+            gap: 10px;
+            align-items: center;
+            position: sticky;
+            top: 60px;
+            z-index: 99;
+        }
+
+        .filter-input {
+            padding: 4px 8px;
+            font-size: 12px;
+            background: #333;
+            border: 1px solid #555;
+            color: #fff;
+            border-radius: 3px;
+        }
+
+        .filter-input:focus {
+            border-color: #00ff88;
+        }
+
+        .table-container {
+            height: calc(100vh - 200px);
+            overflow: auto;
+            background: #1a1a1a;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #1a1a1a;
+        }
+
+        th {
+            background: #2d2d2d;
+            padding: 12px 8px;
+            text-align: left;
+            border-bottom: 2px solid #333;
+            cursor: pointer;
+            user-select: none;
+            font-size: 13px;
+            white-space: nowrap;
+            position: sticky;
+            top: 100px;
+            z-index: 98;
+        }
+
+        th:hover {
+            background: #3d3d3d;
+        }
+
+        th.sortable::after {
+            content: ' ↕';
+            opacity: 0.5;
+        }
+
+        th.sort-asc::after {
+            content: ' ↑';
+            opacity: 1;
+            color: #00ff88;
+        }
+
+        th.sort-desc::after {
+            content: ' ↓';
+            opacity: 1;
+            color: #00ff88;
+        }
+
+        td {
+            padding: 6px 8px;
+            border-bottom: 1px solid #333;
+            font-size: 12px;
+            white-space: nowrap;
+        }
+
+        tr:nth-child(even) {
+            background: #222;
+        }
+
+        tr:hover {
+            background: #2a2a2a;
+        }
+
+        .price-positive {
+            color: #00ff88;
+        }
+
+        .price-negative {
+            color: #ff4444;
+        }
+
+        .price-neutral {
+            color: #ffffff;
+        }
+
+        .chart-score-high {
+            background: #00ff88;
+            color: #000;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-weight: bold;
+        }
+
+        .chart-score-medium {
+            background: #ffaa00;
+            color: #000;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-weight: bold;
+        }
+
+        .chart-score-low {
+            background: #666;
+            color: #fff;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+
+        .announcement-yes {
+            color: #00ff88;
+            font-weight: bold;
+        }
+
+        .announcement-no {
+            color: #666;
+        }
+
+        .gap-positive {
+            background: #00ff8833;
+            color: #00ff88;
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+
+        .gap-negative {
+            background: #ff444433;
+            color: #ff4444;
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+
+        .pdc-strong {
+            background: #00ff88;
+            color: #000;
+            padding: 1px 4px;
+            border-radius: 2px;
+            font-size: 10px;
+            font-weight: bold;
+        }
+
+        .updated {
+            animation: flash 0.5s ease-in-out;
+        }
+
+        @keyframes flash {
+            0% { background-color: #00ff88; }
+            100% { background-color: transparent; }
+        }
+
+        .connection-status {
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        .connected {
+            background: #00ff88;
+            color: #000;
+        }
+
+        .disconnected {
+            background: #ff4444;
+            color: #fff;
+        }
+
+        .filter-summary {
+            background: #333;
+            padding: 5px 20px;
+            font-size: 12px;
+            color: #ccc;
+            border-bottom: 1px solid #444;
+        }
+
+        /* Column widths */
+        .col-symbol { width: 120px; }
+        .col-change { width: 100px; }
+        .col-ltp { width: 80px; }
+        .col-chart-score { width: 100px; }
+        .col-announcement { width: 80px; }
+        .col-premarket { width: 120px; }
+        .col-prev-range { width: 150px; }
+        .col-gap { width: 80px; }
+        .col-pdc { width: 120px; }
+        .col-description { width: 300px; min-width: 200px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>LIVE TRADING DASHBOARD</h1>
+        <div class="stats">
+            <div class="stat-item">
+                <span class="stat-value" id="totalSymbols">0</span>
+                <span>Total</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-value" id="filteredSymbols">0</span>
+                <span>Filtered</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-value" id="gainers">0</span>
+                <span>Gainers</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-value" id="losers">0</span>
+                <span>Losers</span>
+            </div>
+            <div class="stat-item">
+                <span class="connection-status" id="connectionStatus">Disconnected</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="controls">
+        <div class="control-group">
+            <button class="btn" id="pauseBtn">Pause Updates</button>
+            <button class="btn" id="exportBtn">Export CSV</button>
+            <button class="btn" id="clearFiltersBtn">Clear All Filters</button>
+        </div>
+    </div>
+
+    <div class="filter-summary" id="filterSummary">
+        No filters applied - showing all data
+    </div>
+
+    <div class="filter-row">
+        <input type="text" class="filter-input" id="filter-symbol" placeholder="Symbol...">
+        <input type="text" class="filter-input" id="filter-change" placeholder="Change %...">
+        <input type="text" class="filter-input" id="filter-ltp" placeholder="LTP...">
+        <input type="text" class="filter-input" id="filter-chart-score" placeholder="Score...">
+        <select class="filter-input" id="filter-announcement">
+            <option value="">All</option>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+        </select>
+        <select class="filter-input" id="filter-premarket">
+            <option value="">All</option>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+        </select>
+        <select class="filter-input" id="filter-prev-range">
+            <option value="">All</option>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+        </select>
+        <input type="text" class="filter-input" id="filter-gap" placeholder="Gap %...">
+        <select class="filter-input" id="filter-pdc">
+            <option value="">All</option>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+        </select>
+        <input type="text" class="filter-input" id="filter-description" placeholder="Description...">
+    </div>
+
+    <div class="table-container">
+        <table id="dataTable">
+            <thead>
+                <tr>
+                    <th class="sortable col-symbol" data-column="symbol">Symbol</th>
+                    <th class="sortable col-change" data-column="change">Change %</th>
+                    <th class="sortable col-ltp" data-column="ltp">LTP</th>
+                    <th class="sortable col-chart-score" data-column="chartScore">Chart-ink Score</th>
+                    <th class="col-announcement">Announcement</th>
+                    <th class="col-premarket">NSE Pre Market</th>
+                    <th class="col-prev-range">Open in Prev Range</th>
+                    <th class="sortable col-gap" data-column="gap">Gap %</th>
+                    <th class="col-pdc">PDC Strong Close</th>
+                    <th class="col-description">Announcement Description</th>
+                </tr>
+            </thead>
+            <tbody id="tableBody">
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        class TradingDashboard {
+            constructor() {
+                this.data = new Map();
+                this.filteredData = [];
+                this.sortColumn = null;
+                this.sortDirection = 'asc';
+                this.isPaused = false;
+                this.updateQueue = [];
+                this.filters = {};
+                
+                this.initializeElements();
+                this.setupEventListeners();
+                this.setupMockDataStream();
+                this.startUpdateLoop();
+            }
+
+            initializeElements() {
+                this.tableBody = document.getElementById('tableBody');
+                this.pauseBtn = document.getElementById('pauseBtn');
+                this.exportBtn = document.getElementById('exportBtn');
+                this.clearFiltersBtn = document.getElementById('clearFiltersBtn');
+                this.connectionStatus = document.getElementById('connectionStatus');
+                this.filterSummary = document.getElementById('filterSummary');
+                
+                // Stats elements
+                this.totalSymbols = document.getElementById('totalSymbols');
+                this.filteredSymbols = document.getElementById('filteredSymbols');
+                this.gainers = document.getElementById('gainers');
+                this.losers = document.getElementById('losers');
+
+                // Filter elements
+                this.filterElements = {
+                    symbol: document.getElementById('filter-symbol'),
+                    change: document.getElementById('filter-change'),
+                    ltp: document.getElementById('filter-ltp'),
+                    chartScore: document.getElementById('filter-chart-score'),
+                    announcement: document.getElementById('filter-announcement'),
+                    premarket: document.getElementById('filter-premarket'),
+                    prevRange: document.getElementById('filter-prev-range'),
+                    gap: document.getElementById('filter-gap'),
+                    pdc: document.getElementById('filter-pdc'),
+                    description: document.getElementById('filter-description')
+                };
+            }
+
+            setupEventListeners() {
+                // Filter event listeners
+                Object.keys(this.filterElements).forEach(key => {
+                    this.filterElements[key].addEventListener('input', () => this.applyFilters());
+                    this.filterElements[key].addEventListener('change', () => this.applyFilters());
+                });
+                
+                // Control buttons
+                this.pauseBtn.addEventListener('click', () => this.togglePause());
+                this.exportBtn.addEventListener('click', () => this.exportCSV());
+                this.clearFiltersBtn.addEventListener('click', () => this.clearAllFilters());
+                
+                // Table sorting
+                document.querySelectorAll('th.sortable').forEach(th => {
+                    th.addEventListener('click', () => this.sortTable(th.dataset.column));
+                });
+            }
+
+            setupMockDataStream() {
+                // Simulate WebSocket connection
+                this.connectionStatus.textContent = 'Connected';
+                this.connectionStatus.className = 'connection-status connected';
+                
+                // Generate mock data based on your Excel structure
+                const mockData = [
+                    { symbol: 'MUFTI', change: 19.9972, ltp: 173.84, chartScore: 7.5, announcement: 'yes', premarket: 'yes', prevRange: 'yes', gap: 4.18, pdc: 'no', description: 'Press Release | Investor Presentation | Change in Directors/ Key Managerial Personnel/ Auditor/ Compliance Officer/ Share Transfer Agent' },
+                    { symbol: 'EXPLEOSOL', change: 16.8671, ltp: 1091, chartScore: 7.5, announcement: 'yes', premarket: 'yes', prevRange: 'yes', gap: 3.82, pdc: 'no', description: 'Press Release | Investor Presentation | Outcome of Board Meetings' },
+                    { symbol: 'HONASA', change: 15.9943, ltp: 319.17, chartScore: 7.5, announcement: 'yes', premarket: 'yes', prevRange: 'yes', gap: 2.70, pdc: 'no', description: 'Analysts/Institutional Investor Meet/Con. Call Updates | General Updates' },
+                    { symbol: 'HPL', change: 15.4893, ltp: 559.95, chartScore: 7.5, announcement: 'yes', premarket: 'yes', prevRange: 'yes', gap: 10.45, pdc: 'no', description: 'Investor Presentation | Press Release | Outcome of Board Meetings' },
+                    { symbol: 'BIRLACABLE', change: 13.1416, ltp: 195.95, chartScore: 7.5, announcement: 'no', premarket: 'no', prevRange: 'no', gap: -1.43, pdc: 'no', description: 'Outcome of Board Meeting-XBRL' },
+                    { symbol: 'VINDHYATEL', change: 10.3578, ltp: 1644, chartScore: 7.5, announcement: 'no', premarket: 'no', prevRange: 'no', gap: -3.70, pdc: 'no', description: 'Change in Directors/ Key Managerial Personnel/ Auditor/ Compliance Officer/ Share Transfer Agent' },
+                    { symbol: 'EMCURE', change: 9.994, ltp: 1284.4, chartScore: 7.5, announcement: 'yes', premarket: 'yes', prevRange: 'yes', gap: 2.04, pdc: 'yes', description: 'Analysts/Institutional Investor Meet/Con. Call Updates | Updates' },
+                    { symbol: 'NAHARPOLY', change: 9.7308, ltp: 291.5, chartScore: 0, announcement: 'yes', premarket: 'yes', prevRange: 'yes', gap: 12.93, pdc: 'yes', description: '-' },
+                    { symbol: 'COSMOFIRST', change: 9.6263, ltp: 871.2, chartScore: 0, announcement: 'yes', premarket: 'yes', prevRange: 'yes', gap: 16.27, pdc: 'yes', description: '-' }
+                ];
+
+                mockData.forEach(item => {
+                    this.data.set(item.symbol, {
+                        ...item,
+                        volume: Math.floor(Math.random() * 1000000),
+                        high: item.ltp * (1 + Math.random() * 0.05),
+                        low: item.ltp * (1 - Math.random() * 0.05),
+                        open: item.ltp / (1 + item.change / 100),
+                        lastUpdate: new Date()
+                    });
+                });
+                
+                // Start mock data updates
+                setInterval(() => {
+                    if (!this.isPaused) {
+                        this.updateRandomSymbol();
+                    }
+                }, 1000);
+            }
+
+            updateRandomSymbol() {
+                const symbols = Array.from(this.data.keys());
+                const randomSymbol = symbols[Math.floor(Math.random() * symbols.length)];
+                const currentData = this.data.get(randomSymbol);
+                
+                if (currentData) {
+                    const priceChange = (Math.random() - 0.5) * 2;
+                    const newLTP = Math.max(1, currentData.ltp + priceChange);
+                    const newChange = ((newLTP - currentData.open) / currentData.open) * 100;
+                    
+                    this.data.set(randomSymbol, {
+                        ...currentData,
+                        ltp: newLTP,
+                        change: newChange,
+                        volume: currentData.volume + Math.floor(Math.random() * 1000),
+                        lastUpdate: new Date()
+                    });
+                    
+                    this.updateQueue.push(randomSymbol);
+                }
+            }
+
+            startUpdateLoop() {
+                setInterval(() => {
+                    if (this.updateQueue.length > 0) {
+                        this.processUpdates();
+                    }
+                }, 200);
+            }
+
+            processUpdates() {
+                const updatedSymbols = [...new Set(this.updateQueue)];
+                this.updateQueue = [];
+                
+                this.applyFilters();
+                this.updateStats();
+                
+                // Highlight updated rows
+                updatedSymbols.forEach(symbol => {
+                    const row = document.querySelector(`tr[data-symbol="${symbol}"]`);
+                    if (row) {
+                        row.classList.add('updated');
+                        setTimeout(() => row.classList.remove('updated'), 500);
+                    }
+                });
+            }
+
+            applyFilters() {
+                // Get current filter values
+                this.filters = {
+                    symbol: this.filterElements.symbol.value.toLowerCase(),
+                    change: this.filterElements.change.value,
+                    ltp: this.filterElements.ltp.value,
+                    chartScore: this.filterElements.chartScore.value,
+                    announcement: this.filterElements.announcement.value,
+                    premarket: this.filterElements.premarket.value,
+                    prevRange: this.filterElements.prevRange.value,
+                    gap: this.filterElements.gap.value,
+                    pdc: this.filterElements.pdc.value,
+                    description: this.filterElements.description.value.toLowerCase()
+                };
+
+                // Apply filters
+                this.filteredData = Array.from(this.data.values()).filter(item => {
+                    return this.matchesAllFilters(item);
+                });
+                
+                if (this.sortColumn) {
+                    this.sortData();
+                }
+                
+                this.renderTable();
+                this.updateFilterSummary();
+            }
+
+            matchesAllFilters(item) {
+                // Symbol filter
+                if (this.filters.symbol && !item.symbol.toLowerCase().includes(this.filters.symbol)) {
+                    return false;
+                }
+
+                // Change % filter (supports ranges like >5, <-2, 5-10)
+                if (this.filters.change && !this.matchesNumericFilter(item.change, this.filters.change)) {
+                    return false;
+                }
+
+                // LTP filter
+                if (this.filters.ltp && !this.matchesNumericFilter(item.ltp, this.filters.ltp)) {
+                    return false;
+                }
+
+                // Chart score filter
+                if (this.filters.chartScore && !this.matchesNumericFilter(item.chartScore, this.filters.chartScore)) {
+                    return false;
+                }
+
+                // Gap % filter
+                if (this.filters.gap && !this.matchesNumericFilter(item.gap, this.filters.gap)) {
+                    return false;
+                }
+
+                // Yes/No filters
+                if (this.filters.announcement && item.announcement !== this.filters.announcement) {
+                    return false;
+                }
+
+                if (this.filters.premarket && item.premarket !== this.filters.premarket) {
+                    return false;
+                }
+
+                if (this.filters.prevRange && item.prevRange !== this.filters.prevRange) {
+                    return false;
+                }
+
+                if (this.filters.pdc && item.pdc !== this.filters.pdc) {
+                    return false;
+                }
+
+                // Description filter
+                if (this.filters.description && !item.description.toLowerCase().includes(this.filters.description)) {
+                    return false;
+                }
+
+                return true;
+            }
+
+            matchesNumericFilter(value, filter) {
+                filter = filter.trim();
+                if (!filter) return true;
+
+                // Handle range filters (e.g., "5-10", ">5", "<-2", ">=10")
+                if (filter.includes('-') && !filter.startsWith('-')) {
+                    const [min, max] = filter.split('-').map(x => parseFloat(x.trim()));
+                    return value >= min && value <= max;
+                } else if (filter.startsWith('>=')) {
+                    return value >= parseFloat(filter.substring(2));
+                } else if (filter.startsWith('<=')) {
+                    return value <= parseFloat(filter.substring(2));
+                } else if (filter.startsWith('>')) {
+                    return value > parseFloat(filter.substring(1));
+                } else if (filter.startsWith('<')) {
+                    return value < parseFloat(filter.substring(1));
+                } else {
+                    // Exact match or contains
+                    const filterNum = parseFloat(filter);
+                    return isNaN(filterNum) ? value.toString().includes(filter) : Math.abs(value - filterNum) < 0.01;
+                }
+            }
+
+            updateFilterSummary() {
+                const activeFilters = [];
+                Object.entries(this.filters).forEach(([key, value]) => {
+                    if (value) {
+                        activeFilters.push(`${key}: ${value}`);
+                    }
+                });
+
+                if (activeFilters.length === 0) {
+                    this.filterSummary.textContent = 'No filters applied - showing all data';
+                } else {
+                    this.filterSummary.textContent = `Active filters: ${activeFilters.join(', ')} | Showing ${this.filteredData.length} of ${this.data.size} records`;
+                }
+            }
+
+            clearAllFilters() {
+                Object.values(this.filterElements).forEach(element => {
+                    element.value = '';
+                });
+                this.applyFilters();
+            }
+
+            sortTable(column) {
+                if (this.sortColumn === column) {
+                    this.sortDirection = this.sortDirection === 'asc' ? 'desc' : 'asc';
+                } else {
+                    this.sortColumn = column;
+                    this.sortDirection = 'asc';
+                }
+                
+                // Update header indicators
+                document.querySelectorAll('th.sortable').forEach(th => {
+                    th.classList.remove('sort-asc', 'sort-desc');
+                });
+                
+                const currentHeader = document.querySelector(`th[data-column="${column}"]`);
+                currentHeader.classList.add(this.sortDirection === 'asc' ? 'sort-asc' : 'sort-desc');
+                
+                this.sortData();
+                this.renderTable();
+            }
+
+            sortData() {
+                this.filteredData.sort((a, b) => {
+                    let aVal = a[this.sortColumn];
+                    let bVal = b[this.sortColumn];
+                    
+                    if (typeof aVal === 'string') {
+                        aVal = aVal.toLowerCase();
+                        bVal = bVal.toLowerCase();
+                    }
+                    
+                    if (aVal < bVal) return this.sortDirection === 'asc' ? -1 : 1;
+                    if (aVal > bVal) return this.sortDirection === 'asc' ? 1 : -1;
+                    return 0;
+                });
+            }
+
+            renderTable() {
+                const tbody = this.tableBody;
+                const fragment = document.createDocumentFragment();
+                
+                this.filteredData.forEach(item => {
+                    const row = document.createElement('tr');
+                    row.setAttribute('data-symbol', item.symbol);
+                    
+                    const changeClass = item.change > 0 ? 'price-positive' : 
+                                       item.change < 0 ? 'price-negative' : 'price-neutral';
+                    
+                    const chartScoreClass = item.chartScore >= 7 ? 'chart-score-high' :
+                                           item.chartScore >= 4 ? 'chart-score-medium' : 'chart-score-low';
+                    
+                    const gapClass = item.gap > 0 ? 'gap-positive' : 
+                                    item.gap < 0 ? 'gap-negative' : '';
+                    
+                    row.innerHTML = `
+                        <td class="col-symbol">${item.symbol}</td>
+                        <td class="col-change ${changeClass}">${item.change.toFixed(2)}%</td>
+                        <td class="col-ltp ${changeClass}">${item.ltp.toFixed(2)}</td>
+                        <td class="col-chart-score"><span class="${chartScoreClass}">${item.chartScore}</span></td>
+                        <td class="col-announcement ${item.announcement === 'yes' ? 'announcement-yes' : 'announcement-no'}">${item.announcement}</td>
+                        <td class="col-premarket ${item.premarket === 'yes' ? 'announcement-yes' : 'announcement-no'}">${item.premarket}</td>
+                        <td class="col-prev-range ${item.prevRange === 'yes' ? 'announcement-yes' : 'announcement-no'}">${item.prevRange}</td>
+                        <td class="col-gap"><span class="${gapClass}">${item.gap.toFixed(2)}%</span></td>
+                        <td class="col-pdc">${item.pdc === 'yes' ? '<span class="pdc-strong">YES</span>' : 'no'}</td>
+                        <td class="col-description">${item.description}</td>
+                    `;
+                    
+                    fragment.appendChild(row);
+                });
+                
+                tbody.innerHTML = '';
+                tbody.appendChild(fragment);
+            }
+
+            updateStats() {
+                const total = this.data.size;
+                const filtered = this.filteredData.length;
+                const gainers = Array.from(this.data.values()).filter(item => item.change > 0).length;
+                const losers = Array.from(this.data.values()).filter(item => item.change < 0).length;
+                
+                this.totalSymbols.textContent = total;
+                this.filteredSymbols.textContent = filtered;
+                this.gainers.textContent = gainers;
+                this.losers.textContent = losers;
+            }
+
+            togglePause() {
+                this.isPaused = !this.isPaused;
+                this.pauseBtn.textContent = this.isPaused ? 'Resume Updates' : 'Pause Updates';
+                this.pauseBtn.classList.toggle('active', this.isPaused);
+            }
+
+            exportCSV() {
+                const headers = ['Symbol', 'Change %', 'LTP', 'Chart Score', 'Announcement', 'NSE Pre Market', 'Open in Prev Range', 'Gap %', 'PDC Strong Close', 'Description'];
+                const csvContent = [
+                    headers.join(','),
+                    ...this.filteredData.map(item => [
+                        item.symbol,
+                        item.change.toFixed(2),
+                        item.ltp.toFixed(2),
+                        item.chartScore,
+                        item.announcement,
+                        item.premarket,
+                        item.prevRange,
+                        item.gap.toFixed(2),
+                        item.pdc,
+                        `"${item.description}"`
+                    ].join(','))
+                ].join('\n');
+                
+                const blob = new Blob([csvContent], { type: 'text/csv' });
