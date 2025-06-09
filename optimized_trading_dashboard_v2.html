@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Trading Dashboard - V2 Strategies</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <style>
+        :root {
+            --bg-color: #0d1117;
+            --primary-color: #24d48a;
+            --card-bg-color: #161b22;
+            --border-color: #30363d;
+            --text-color: #c9d1d9;
+            --text-secondary-color: #8b949e;
+            --positive-color: #2ea043;
+            --negative-color: #f85149;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+            background: var(--bg-color);
+            color: var(--text-color);
+        }
+
+        .header {
+            padding: 10px 20px;
+            background: var(--card-bg-color);
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 1000;
+        }
+
+        .header h1 {
+            font-size: 22px;
+            color: var(--primary-color);
+        }
+
+        .stats { display: flex; gap: 20px; font-size: 14px; }
+        .stat-item { display: flex; flex-direction: column; text-align: center; }
+        .stat-value { font-weight: bold; color: var(--primary-color); }
+
+        .strategy-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(450px, 1fr));
+            gap: 16px;
+            padding: 16px;
+        }
+
+        .strategy-card {
+            background: var(--card-bg-color);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            display: flex;
+            flex-direction: column;
+            height: 400px; /* Fixed height for cards */
+        }
+
+        .strategy-title {
+            font-size: 16px;
+            font-weight: 600;
+            padding: 12px;
+            border-bottom: 1px solid var(--border-color);
+            color: var(--text-color);
+        }
+
+        .table-wrapper {
+            overflow-y: auto; /* Scroll within the card */
+            flex-grow: 1;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th, td {
+            padding: 8px 12px;
+            text-align: left;
+            font-size: 12px;
+        }
+
+        th {
+            background: #1f242c;
+            position: sticky;
+            top: 0;
+            z-index: 1;
+        }
+
+        tbody tr:nth-child(even) { background: #1a1f27; }
+        tbody tr:hover { background: #222831; }
+
+        .price-positive { color: var(--positive-color); font-weight: 600; }
+        .price-negative { color: var(--negative-color); font-weight: 600; }
+        .price-neutral { color: var(--text-color); }
+
+        /* Flash animations */
+        .flash-up { animation: flash-up 0.7s ease-out; }
+        .flash-down { animation: flash-down 0.7s ease-out; }
+        @keyframes flash-up {
+            0%, 100% { background-color: transparent; }
+            50% { background-color: rgba(46, 160, 67, 0.3); }
+        }
+        @keyframes flash-down {
+            0%, 100% { background-color: transparent; }
+            50% { background-color: rgba(248, 81, 73, 0.3); }
+        }
+
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Live Dashboard V2</h1>
+        <div class="stats">
+            <div class="stat-item">
+                <span>Status</span>
+                <span id="connection-status" class="stat-value">Connecting...</span>
+            </div>
+        </div>
+    </div>
+
+    <div id="strategy-container" class="strategy-container">
+        <!-- Strategy cards will be dynamically inserted here -->
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const socket = io({
+                transports: ['websocket'],
+                upgrade: false
+            });
+
+            const strategyContainer = document.getElementById('strategy-container');
+            const statusEl = document.getElementById('connection-status');
+            
+            // Define which columns to display and in what order
+            const columnsToShow = ['symbol', 'ltp', 'change', 'pdc', 'premarket', 'gap', 'description'];
+            const columnHeaders = {
+                'symbol': 'Symbol',
+                'ltp': 'LTP',
+                'change': 'Change %',
+                'pdc': 'PDC Strong',
+                'premarket': 'Pre-Mkt',
+                'gap': 'Gap %',
+                'description': 'Description'
+            };
+
+            socket.on('connect', () => {
+                statusEl.textContent = 'Connected';
+                statusEl.style.color = 'var(--positive-color)';
+                console.log('Socket connected, requesting initial data...');
+                socket.emit('request_initial_data');
+            });
+
+            socket.on('disconnect', () => {
+                statusEl.textContent = 'Disconnected';
+                statusEl.style.color = 'var(--negative-color)';
+                console.log('Socket disconnected.');
+            });
+
+            socket.on('initial_data', handleInitialData);
+            socket.on('stock_update', handleStockUpdate);
+
+            function handleInitialData(data) {
+                console.log("Received initial data for strategies:", Object.keys(data));
+                strategyContainer.innerHTML = ''; // Clear existing cards
+                for (const strategyName in data) {
+                    if (Object.keys(data[strategyName]).length > 0) {
+                        createStrategyTable(strategyName, data[strategyName]);
+                    }
+                }
+            }
+
+            function handleStockUpdate(data) {
+                // console.log("Received stock update for strategies:", Object.keys(data));
+                for (const strategyName in data) {
+                    let table = document.getElementById(`table-${strategyName}`);
+                    if (!table) {
+                        // If a new strategy appears, create its table
+                        createStrategyTable(strategyName, data[strategyName]);
+                    } else {
+                        // Otherwise, update the existing table
+                        const tbody = table.querySelector('tbody');
+                        for (const symbol in data[strategyName]) {
+                            createOrUpdateRow(data[strategyName][symbol], tbody, `row-${strategyName}-${symbol}`);
+                        }
+                    }
+                }
+            }
+            
+            function createStrategyTable(strategyName, stocks) {
+                const card = document.createElement('div');
+                card.className = 'strategy-card';
+
+                const title = document.createElement('h2');
+                title.className = 'strategy-title';
+                title.textContent = strategyName;
+
+                const tableWrapper = document.createElement('div');
+                tableWrapper.className = 'table-wrapper';
+
+                const table = document.createElement('table');
+                table.id = `table-${strategyName}`;
+                
+                const thead = document.createElement('thead');
+                const headerRow = document.createElement('tr');
+                columnsToShow.forEach(key => {
+                    const th = document.createElement('th');
+                    th.textContent = columnHeaders[key] || key;
+                    headerRow.appendChild(th);
+                });
+                thead.appendChild(headerRow);
+
+                const tbody = document.createElement('tbody');
+                
+                table.append(thead, tbody);
+                tableWrapper.appendChild(table);
+                card.append(title, tableWrapper);
+                strategyContainer.appendChild(card);
+
+                for (const symbol in stocks) {
+                    createOrUpdateRow(stocks[symbol], tbody, `row-${strategyName}-${symbol}`);
+                }
+            }
+
+            function createOrUpdateRow(stockData, tbody, rowId) {
+                let row = document.getElementById(rowId);
+
+                // Create row if it doesn't exist
+                if (!row) {
+                    row = document.createElement('tr');
+                    row.id = rowId;
+                    
+                    columnsToShow.forEach(key => {
+                        const cell = document.createElement('td');
+                        cell.dataset.key = key;
+                        row.appendChild(cell);
+                    });
+                    tbody.appendChild(row);
+                }
+                
+                const oldLtp = parseFloat(row.querySelector('[data-key="ltp"]')?.textContent || 0);
+
+                // Update cells
+                row.querySelectorAll('td').forEach(cell => {
+                    const key = cell.dataset.key;
+                    let value = stockData[key];
+
+                    // Formatting
+                    if (typeof value === 'number') {
+                        value = (key === 'change' || key === 'gap') ? value.toFixed(2) : value;
+                    }
+                    if (value === null || value === undefined || value === 'nan') {
+                        value = '-';
+                    }
+                    if (key === 'description' && value.length > 30) {
+                        cell.title = value; // Full text on hover
+                        value = value.substring(0, 30) + '...';
+                    }
+                    
+                    cell.textContent = value;
+
+                    // Apply styles
+                    if (key === 'change') {
+                        const change = parseFloat(stockData[key]);
+                        cell.className = change > 0 ? 'price-positive' : change < 0 ? 'price-negative' : 'price-neutral';
+                    }
+                });
+
+                // Flash effect
+                const newLtp = parseFloat(stockData.ltp);
+                row.classList.remove('flash-up', 'flash-down');
+                if (newLtp > oldLtp) {
+                    void row.offsetWidth; // Trigger reflow
+                    row.classList.add('flash-up');
+                } else if (newLtp < oldLtp) {
+                    void row.offsetWidth; // Trigger reflow
+                    row.classList.add('flash-down');
+                }
+            }
+        });
+    </script>
+</body>
+</html> 
