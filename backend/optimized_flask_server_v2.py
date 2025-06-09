@@ -78,13 +78,13 @@ def load_csv_data():
         
         # Map CSV columns to dashboard fields
         column_mapping = {
-            'Announcement Weight': 'newsWeight',          # Renamed
+            'Announcement Weight': 'newsWeight',
             'chart-ink strategy': 'chartStrategy',
             'Announcement Description': 'description',
             'Nse_pre market': 'premarket',
-            'Open in Prev Range Top 20%': 'spdc',  # Renamed from prevRange
+            'Open in Prev Range Top 20%': 'sopen',
             'Gap %': 'gap',
-            'PDC strong close': 'pdc',
+            'PDC strong close': 'spdc',
             'Prev_High': 'pdh'
         }
         
