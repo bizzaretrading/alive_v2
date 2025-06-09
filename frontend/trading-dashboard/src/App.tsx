@@ -413,8 +413,7 @@ const ResizableTh = ({ children, columnKey, isNumeric, onResize, onClick }: {
       onClick={onClick}
       style={{
         ...styles.th, 
-        ...(isNumeric ? styles.thNumeric : {}),
-        position: 'relative' // Needed for resize handle
+        ...(isNumeric ? styles.thNumeric : {})
       }}
     >
       {children}
