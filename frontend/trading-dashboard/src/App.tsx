@@ -126,27 +126,68 @@ function App() {
   const sortedStrategyNames = Object.keys(strategies).sort();
 
   return (
-    <div style={styles.app}>
-      <Header 
-        status={status} 
-        filter={filter} 
-        onFilterChange={setFilter} 
-        onResetLayout={handleResetLayout} 
-      />
-      <div style={styles.strategyContainer}>
-        {sortedStrategyNames.map(strategyName => (
-          <StrategyCard
-            key={strategyName}
-            strategyName={strategyName}
-            stocks={strategies[strategyName]}
-            filter={filter}
-            layoutResetKey={layoutResetKey}
-            columnWidths={columnWidths}
-            onColumnResize={handleColumnResize}
-          />
-        ))}
+    <>
+      <style>{`
+        :root {
+          --bg-color: #0d1117;
+          --primary-color: #24d48a;
+          --card-bg-color: #161b22;
+          --border-color: #30363d;
+          --text-color: #c9d1d9;
+          --positive-color: #2ea043;
+          --negative-color: #f85149;
+        }
+        .strategy-table th,
+        .strategy-table td {
+          border-right: 1px solid var(--border-color);
+        }
+        .strategy-table th:last-child,
+        .strategy-table td:last-child {
+          border-right: none;
+        }
+        .strategy-table tbody tr:nth-child(even) {
+          background-color: #1a1f27;
+        }
+        .strategy-table tbody tr:hover {
+          background-color: #222831;
+        }
+        .flash-up {
+          animation: flash-up 0.7s ease-out;
+        }
+        .flash-down {
+          animation: flash-down 0.7s ease-out;
+        }
+        @keyframes flash-up {
+          0%, 100% { background-color: transparent; }
+          50% { background-color: rgba(46, 160, 67, 0.3); }
+        }
+        @keyframes flash-down {
+          0%, 100% { background-color: transparent; }
+          50% { background-color: rgba(248, 81, 73, 0.3); }
+        }
+      `}</style>
+      <div style={styles.app}>
+        <Header 
+          status={status} 
+          filter={filter} 
+          onFilterChange={setFilter} 
+          onResetLayout={handleResetLayout} 
+        />
+        <div style={styles.strategyContainer}>
+          {sortedStrategyNames.map(strategyName => (
+            <StrategyCard
+              key={strategyName}
+              strategyName={strategyName}
+              stocks={strategies[strategyName]}
+              filter={filter}
+              layoutResetKey={layoutResetKey}
+              columnWidths={columnWidths}
+              onColumnResize={handleColumnResize}
+            />
+          ))}
+        </div>
       </div>
-    </div>
+    </>
   );
 }
 
@@ -322,7 +363,7 @@ const StrategyCard = ({
     <div style={{...styles.strategyCard, height: `${height}px`}}>
       <h2 style={styles.strategyTitle}>{strategyName}</h2>
       <div style={styles.tableWrapper}>
-        <table style={{...styles.table, tableLayout: 'fixed'}}>
+        <table className="strategy-table" style={{...styles.table, tableLayout: 'fixed'}}>
           <colgroup>
             {columns.map(col => <col key={col.key} style={{ width: `${columnWidths[col.key]}px` }} />)}
           </colgroup>
@@ -377,6 +418,17 @@ const StrategyCard = ({
   );
 };
 
+// --- Color Helper Function ---
+function getChangeColor(change: number): string {
+  if (change > 0) {
+    return 'var(--positive-color)';
+  }
+  if (change < 0) {
+    return 'var(--negative-color)';
+  }
+  return 'var(--text-color)';
+}
+
 // --- Resizable Table Header Component ---
 const ResizableTh = ({ children, columnKey, isNumeric, onResize, onClick }: {
   children: React.ReactNode;
@@ -427,10 +479,31 @@ const ResizableTh = ({ children, columnKey, isNumeric, onResize, onClick }: {
 
 // --- Stock Row Component ---
 const StockRow = ({ stock }: { stock: StockData }) => {
-  const changeColor = stock.change > 0 ? 'var(--positive-color)' : stock.change < 0 ? 'var(--negative-color)' : 'var(--text-color)';
+  const changeColor = getChangeColor(stock.change);
+  const rowRef = React.useRef<HTMLTableRowElement>(null);
+  const prevLtp = React.useRef(stock.ltp);
+
+  useEffect(() => {
+    const row = rowRef.current;
+    if (!row) return;
+
+    if (stock.ltp > prevLtp.current) {
+      row.classList.add('flash-up');
+    } else if (stock.ltp < prevLtp.current) {
+      row.classList.add('flash-down');
+    }
+
+    prevLtp.current = stock.ltp;
+
+    const timeoutId = setTimeout(() => {
+      row.classList.remove('flash-up', 'flash-down');
+    }, 700); // Animation duration
+
+    return () => clearTimeout(timeoutId);
+  }, [stock.ltp]);
 
   return (
-    <tr>
+    <tr ref={rowRef}>
       <td style={styles.td}>{stock.symbol.replace('NSE:', '').replace('-EQ', '')}</td>
       <td style={{...styles.td, ...styles.tdNumeric}}>{stock.ltp?.toFixed(2)}</td>
       <td style={{...styles.td, ...styles.tdNumeric, color: changeColor}}>{stock.change?.toFixed(2)}%</td>
@@ -585,15 +658,6 @@ const styles = {
     cursor: 'col-resize',
     zIndex: 2,
   } as React.CSSProperties,
-  ':root': {
-    '--bg-color': '#0d1117',
-    '--primary-color': '#24d48a',
-    '--card-bg-color': '#161b22',
-    '--border-color': '#30363d',
-    '--text-color': '#c9d1d9',
-    '--positive-color': '#2ea043',
-    '--negative-color': '#f85149',
-  }
 };
 
 export default App;

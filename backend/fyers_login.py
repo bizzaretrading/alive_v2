@@ -1,10 +1,10 @@
-
 import json
 import requests
 import pyotp
 from urllib import parse
 import sys
 import hashlib
+from pathlib import Path
 
 
 
@@ -209,7 +209,7 @@ def main():
     validate_authcode_result = validate_authcode(
         app_id_hash=APP_ID_HASH, auth_code=auth_code
     )
-    if token_result[0] != SUCCESS:
+    if validate_authcode_result[0] != SUCCESS:
         print(f"validate_authcode failure - {validate_authcode_result[1]}")
         sys.exit()
     else:
@@ -219,12 +219,16 @@ def main():
     appid1 = APP_ID + "-" + APP_TYPE
     token1 = "" + validate_authcode_result[1]
     print(f"access_token - {access_token}")
+
+    # Determine the script's directory to save files correctly
+    script_dir = Path(__file__).resolve().parent
+
     #save client id and access token to file
-    with open("fyers_appid.txt", 'w') as file:
+    with open(script_dir / "fyers_appid.txt", 'w') as file:
         file.write(appid1)
-        print('Appid has been save in root folder -> fyers_appid.txt')
-    with open("fyers_token.txt", 'w') as file:
-        print('token has been save in root folder file name -> fyers_token.txt')
+        print('Appid has been saved in the backend folder -> fyers_appid.txt')
+    with open(script_dir / "fyers_token.txt", 'w') as file:
+        print('Token has been saved in the backend folder -> fyers_token.txt')
         file.write(token1)
 
 #n - GKZ044XWZG-100:eyJ0eXAiOiJKV1Qzczcx.eyJpc3MiOiJhcGkuZnllcnMuaW4iLCJpYXQiOjE3MDM3NjcyMDMsImV4cCI6MTcwMzzxcxzcxNzAzNzY3MjAzLCJhdWQiOlsieDowIiwieDoxIiwzxcz3d3dxcDowIl0sInN1YiI6ImFjY2xv4324d3d3dc23190b2tlbiIsImF0X2hhc2giOiJnQUFBQUFCbGpXeWpKTmtmT09rU2YtekY1MURGRzAzQU9oZ29FTEN6S29qMG96eTE1aC1LQU5zbXVLcC1GN3FMZWFEQl9PMlYxWlF6MzhGQVRIMk1Nc3dmOEJwdTRvSWxrRUxYMGVhd3pwcTg3QnZfX2h4VGhRRT0iLCJkaXNwbGF5X25hbWUiOiJCSEFOVSBLQVNIWUFQIiwib21zIjoiSzEiLCJoc21fa2V5IjoiMTQzY2E5M2IwNTgxODQzMDI1YjY0MGU4NGQwM2JkOTNkNDA4NzU4ZjY1NjYzMmM4ZjM0NDRmYTQiLCJmeV9pZCI6IlhCMTgwMTIiLCJhcHBUeXBlIjoxMDAsInBvYV9mbGFnIjoiTiJ9.wZqq0yiRpc8KFXeVLt8JMGRDgV1EoJl_Yse6ebmSO5I
