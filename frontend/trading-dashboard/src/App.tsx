@@ -31,7 +31,7 @@ const socket = io('http://localhost:5000', {
 });
 
 // --- Column Configuration ---
-const columns: { key: keyof StockData; label: string; isNumeric?: boolean }[] = [
+const ALL_COLUMNS: { key: keyof StockData; label: string; isNumeric?: boolean }[] = [
   { key: 'symbol', label: 'Symbol' },
   { key: 'ltp', label: 'LTP', isNumeric: true },
   { key: 'change', label: 'Change %', isNumeric: true },
@@ -43,13 +43,16 @@ const columns: { key: keyof StockData; label: string; isNumeric?: boolean }[] = 
   { key: 'description', label: 'Description' },
 ];
 
+const MORNING_COLUMNS = ALL_COLUMNS.filter(c => c.key !== 'gap' && c.key !== 'sopen');
+
 // --- Main App Component ---
 function App() {
   const [strategies, setStrategies] = useState<AllStrategies>({});
   const [status, setStatus] = useState('Connecting...');
   const [filter, setFilter] = useState('');
   const [layoutResetKey, setLayoutResetKey] = useState(0);
-  const [columnWidths, setColumnWidths] = useState<Record<string, number>>({
+  const [dashboardView, setDashboardView] = useState<DashboardView>('all'); // 'all', 'morning', 'mid-day', 'afternoon'
+  const [columnWidths] = useState<Record<string, number>>({
     symbol: 120,
     ltp: 90,
     change: 90,
@@ -61,21 +64,8 @@ function App() {
     description: 250,
   });
 
-  const handleColumnResize = (key: string, newWidth: number) => {
-    setColumnWidths(prev => ({
-      ...prev,
-      // Enforce a minimum width of 50px
-      [key]: Math.max(newWidth, 50),
-    }));
-  };
-
   const handleResetLayout = () => {
     setLayoutResetKey(prevKey => prevKey + 1);
-    // Also reset column widths to default
-    setColumnWidths({
-      symbol: 120, ltp: 90, change: 90, spdc: 80, sopen: 80, 
-      premarket: 80, gap: 90, newsWeight: 80, description: 250,
-    });
   };
 
   useEffect(() => {
@@ -123,7 +113,47 @@ function App() {
     };
   }, []);
 
-  const sortedStrategyNames = Object.keys(strategies).sort();
+  const visibleColumns = useMemo(() => {
+    switch (dashboardView) {
+      case 'morning':
+        return MORNING_COLUMNS;
+      default:
+        return ALL_COLUMNS;
+    }
+  }, [dashboardView]);
+
+  const filteredStrategies = useMemo(() => {
+    if (dashboardView === 'all') {
+      return strategies;
+    }
+
+    const newStrategies: AllStrategies = {};
+
+    for (const strategyName in strategies) {
+      const group = strategies[strategyName];
+      const filteredGroup: StrategyGroup = {};
+
+      for (const symbol in group) {
+        const stock = group[symbol];
+        if (dashboardView === 'morning') {
+          // (gap% > 0 or Sopen as yes)
+          if ((stock.gap !== undefined && stock.gap > 0) || stock.sopen === 'yes') {
+            filteredGroup[symbol] = stock;
+          }
+        } else {
+           // For mid-day, afternoon, or other views in the future
+          filteredGroup[symbol] = stock;
+        }
+      }
+
+      if (Object.keys(filteredGroup).length > 0) {
+        newStrategies[strategyName] = filteredGroup;
+      }
+    }
+    return newStrategies;
+  }, [strategies, dashboardView]);
+
+  const sortedStrategyNames = Object.keys(filteredStrategies).sort();
 
   return (
     <>
@@ -172,17 +202,19 @@ function App() {
           filter={filter} 
           onFilterChange={setFilter} 
           onResetLayout={handleResetLayout} 
+          dashboardView={dashboardView}
+          onDashboardViewChange={setDashboardView}
         />
         <div style={styles.strategyContainer}>
           {sortedStrategyNames.map(strategyName => (
             <StrategyCard
-              key={strategyName}
+              key={`${strategyName}-${dashboardView}-${layoutResetKey}`} // Force re-mount on reset
               strategyName={strategyName}
-              stocks={strategies[strategyName]}
+              stocks={filteredStrategies[strategyName]}
               filter={filter}
               layoutResetKey={layoutResetKey}
               columnWidths={columnWidths}
-              onColumnResize={handleColumnResize}
+              columns={visibleColumns}
             />
           ))}
         </div>
@@ -191,10 +223,48 @@ function App() {
   );
 }
 
+type DashboardView = 'all' | 'morning' | 'mid-day' | 'afternoon';
+
+const dashboardButtonViews: { id: DashboardView; label: string }[] = [
+    { id: 'all', label: 'All Dashboard' },
+    { id: 'morning', label: 'Morning Dashboard' },
+    { id: 'mid-day', label: 'Mid-Day Dashboard' },
+    { id: 'afternoon', label: 'Afternoon Dashboard' },
+];
+
 // --- Header Component ---
-const Header = ({ status, filter, onFilterChange, onResetLayout }: { status: string, filter: string, onFilterChange: (value: string) => void, onResetLayout: () => void }) => (
+const Header = ({ 
+  status, 
+  filter, 
+  onFilterChange, 
+  onResetLayout,
+  dashboardView,
+  onDashboardViewChange,
+}: { 
+  status: string, 
+  filter: string, 
+  onFilterChange: (value: string) => void, 
+  onResetLayout: () => void,
+  dashboardView: DashboardView,
+  onDashboardViewChange: (view: DashboardView) => void,
+}) => (
   <header style={styles.header}>
-    <h1 style={styles.headerH1}>Live Dashboard - React V3</h1>
+    <div style={styles.headerTitleContainer}>
+        {dashboardButtonViews.map(({ id, label }) => (
+            <button
+                key={id}
+                onClick={() => onDashboardViewChange(id)}
+                disabled={id === 'mid-day' || id === 'afternoon'}
+                style={{
+                    ...styles.dashboardButton,
+                    ...(dashboardView === id ? styles.activeDashboardButton : {}),
+                    ...((id === 'mid-day' || id === 'afternoon') ? styles.disabledDashboardButton : {}),
+                }}
+            >
+                {label}
+            </button>
+        ))}
+    </div>
     <div style={styles.controls}>
         <input
             type="text"
@@ -224,15 +294,15 @@ const StrategyCard = ({
   stocks, 
   filter: globalFilter, 
   layoutResetKey,
-  columnWidths,
-  onColumnResize,
+  columnWidths: initialColumnWidths,
+  columns,
 }: { 
   strategyName: string; 
   stocks: StrategyGroup; 
   filter: string; 
   layoutResetKey: number;
   columnWidths: Record<string, number>;
-  onColumnResize: (key: string, newWidth: number) => void;
+  columns: { key: keyof StockData; label: string; isNumeric?: boolean }[];
 }) => {
   const [sortConfig, setSortConfig] = useState<{ key: keyof StockData; direction: 'asc' | 'desc' }>({ key: 'change', direction: 'desc' });
   const [filters, setFilters] = useState<Partial<Record<keyof StockData, string>>>({
@@ -240,21 +310,31 @@ const StrategyCard = ({
     sopen: 'all',
     premarket: 'all',
   });
-  const [height, setHeight] = useState(400); // Initial height for each card
+  const [height, setHeight] = useState(400);
+  const [width, setWidth] = useState(800);
+  const [currentColumnWidths, setCurrentColumnWidths] = useState(initialColumnWidths);
 
-  // This effect will run whenever the layoutResetKey changes, resetting the height
   useEffect(() => {
-    setHeight(400); // Reset to default height
-  }, [layoutResetKey]);
+    setHeight(400);
+    setWidth(800);
+    setCurrentColumnWidths(initialColumnWidths);
+  }, [layoutResetKey, initialColumnWidths]);
 
-  const handleMouseDown = (e: React.MouseEvent) => {
-    e.preventDefault(); // Prevent text selection during drag
+  const handleColumnResize = (key: string, newWidth: number) => {
+    setCurrentColumnWidths(prev => ({
+      ...prev,
+      [key]: Math.max(newWidth, 50),
+    }));
+  };
+
+  const handleHeightResize = (e: React.MouseEvent) => {
+    e.preventDefault();
     const startY = e.clientY;
     const startHeight = height;
 
     const handleMouseMove = (moveEvent: MouseEvent) => {
-      const newHeight = startHeight + moveEvent.clientY - startY;
-      setHeight(Math.max(200, newHeight)); // Enforce a minimum height of 200px
+      const newHeight = startHeight + (moveEvent.clientY - startY);
+      setHeight(Math.max(200, newHeight));
     };
 
     const handleMouseUp = () => {
@@ -266,83 +346,89 @@ const StrategyCard = ({
     window.addEventListener('mouseup', handleMouseUp);
   };
 
-  const handleFilterChange = (key: keyof StockData, value: string) => {
-    setFilters(prev => ({ ...prev, [key]: value }));
+  const handleWidthResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = width;
+    const startColWidths = { ...currentColumnWidths };
+    const totalStartColWidth = Object.values(startColWidths).reduce((sum, w) => sum + w, 0);
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const newWidth = startWidth + (moveEvent.clientX - startX);
+      const clampedWidth = Math.max(400, newWidth);
+      setWidth(clampedWidth);
+      
+      const newColWidths = { ...startColWidths };
+      const ratio = clampedWidth / startWidth;
+      for (const key in newColWidths) {
+          if (startColWidths[key]) {
+              newColWidths[key] = startColWidths[key] * ratio;
+          }
+      }
+      setCurrentColumnWidths(newColWidths);
+    };
+
+    const handleMouseUp = () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
   };
+  
+  const totalCurrentColumnWidth = useMemo(() => Object.values(currentColumnWidths).reduce((s, w) => s + w, 0), [currentColumnWidths]);
 
   const filteredAndSortedStocks = useMemo(() => {
-    let sortableItems = Object.values(stocks);
+    let stockArray = Object.values(stocks);
 
-    // Global symbol filter
+    // 1. Global text filter (by symbol)
     if (globalFilter) {
-      sortableItems = sortableItems.filter(stock =>
+      stockArray = stockArray.filter(stock =>
         stock.symbol.toLowerCase().includes(globalFilter.toLowerCase())
       );
     }
-
-    // Per-column filters
+    
+    // 2. Column-specific filters
     Object.entries(filters).forEach(([key, value]) => {
-      if (!value || value === 'all') return; // Skip empty or 'all' filters
+      if (!value || value === 'all') return;
 
-      sortableItems = sortableItems.filter(stock => {
+      stockArray = stockArray.filter(stock => {
         const stockValue = stock[key as keyof StockData];
         if (stockValue === null || stockValue === undefined) return false;
 
-        // Yes/No dropdown filtering
-        if (['spdc', 'sopen', 'premarket'].includes(key)) {
-          return String(stockValue).toLowerCase() === value.toLowerCase();
+        if (key === 'change' || key === 'gap') {
+          const range = value.split(', ');
+          const min = range[0] === '>5' ? 5 : parseFloat(range[0]);
+          const max = range[1] === '1-10' ? 10 : parseFloat(range[1]);
+          const numValue = Number(stockValue);
+          if (isNaN(numValue)) return false;
+          if (!isNaN(min) && numValue < min) return false;
+          if (!isNaN(max) && numValue > max) return false;
+          return true;
         }
-
-        // Numeric filtering
-        if (['ltp', 'change', 'gap'].includes(key)) {
-          const filterStr = String(value).trim();
-          const stockNum = Number(stockValue);
-          if (filterStr === '' || isNaN(stockNum)) return true;
-
-          if (filterStr.includes('-')) {
-            const parts = filterStr.split('-').map(Number);
-            if (parts.length !== 2 || isNaN(parts[0]) || isNaN(parts[1])) return true;
-            return stockNum >= parts[0] && stockNum <= parts[1];
-          } else if (filterStr.startsWith('>=')) {
-            const num = Number(filterStr.substring(2));
-            return !isNaN(num) && stockNum >= num;
-          } else if (filterStr.startsWith('<=')) {
-            const num = Number(filterStr.substring(2));
-            return !isNaN(num) && stockNum <= num;
-          } else if (filterStr.startsWith('>')) {
-            const num = Number(filterStr.substring(1));
-            return !isNaN(num) && stockNum > num;
-          } else if (filterStr.startsWith('<')) {
-            const num = Number(filterStr.substring(1));
-            return !isNaN(num) && stockNum < num;
-          } else {
-            const num = Number(filterStr);
-            return !isNaN(num) && String(stockValue).toLowerCase().includes(filterStr.toLowerCase());
-          }
-        }
-        return true;
+        
+        return String(stockValue).toLowerCase() === value.toLowerCase();
       });
     });
 
-    // Sort by selected column
-    sortableItems.sort((a, b) => {
-      const valA = a[sortConfig.key];
-      const valB = b[sortConfig.key];
+    // 3. Sorting
+    if (sortConfig.key) {
+      stockArray.sort((a, b) => {
+        const aVal = a[sortConfig.key];
+        const bVal = b[sortConfig.key];
 
-      if (valA === undefined || valA === null) return 1;
-      if (valB === undefined || valB === null) return -1;
-
-      if (valA < valB) {
-        return sortConfig.direction === 'asc' ? -1 : 1;
-      }
-      if (valA > valB) {
-        return sortConfig.direction === 'asc' ? 1 : -1;
-      }
-      return 0;
-    });
-
-    return sortableItems;
-  }, [stocks, globalFilter, filters, sortConfig]);
+        if (aVal === undefined || aVal === null) return 1;
+        if (bVal === undefined || bVal === null) return -1;
+        
+        if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
+        if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
+        return 0;
+      });
+    }
+    
+    return stockArray;
+  }, [stocks, sortConfig, filters, globalFilter]);
 
   const requestSort = (key: keyof StockData) => {
     let direction: 'asc' | 'desc' = 'asc';
@@ -353,19 +439,23 @@ const StrategyCard = ({
   };
 
   const getSortIndicator = (key: keyof StockData) => {
-    if (sortConfig.key === key) {
-      return sortConfig.direction === 'asc' ? ' ▲' : ' ▼';
-    }
-    return '';
+    if (sortConfig.key !== key) return null;
+    return sortConfig.direction === 'asc' ? ' ▲' : ' ▼';
+  };
+  
+  const handleFilterChange = (key: keyof StockData, value: string) => {
+    setFilters(prev => ({ ...prev, [key]: value }));
   };
 
   return (
-    <div style={{...styles.strategyCard, height: `${height}px`}}>
-      <h2 style={styles.strategyTitle}>{strategyName}</h2>
+    <div style={{...styles.strategyCard, height: `${height}px`, width: `${width}px`}}>
+      <h2 style={styles.strategyTitle}>{`${strategyName} (${filteredAndSortedStocks.length})`}</h2>
       <div style={styles.tableWrapper}>
-        <table className="strategy-table" style={{...styles.table, tableLayout: 'fixed'}}>
-          <colgroup>
-            {columns.map(col => <col key={col.key} style={{ width: `${columnWidths[col.key]}px` }} />)}
+        <table className="strategy-table" style={{...styles.table, width: `${totalCurrentColumnWidth}px`}}>
+           <colgroup>
+            {columns.map(col => (
+              <col key={col.key} style={{ width: `${currentColumnWidths[col.key]}px` }} />
+            ))}
           </colgroup>
           <thead>
             <tr>
@@ -374,44 +464,47 @@ const StrategyCard = ({
                   key={col.key}
                   columnKey={col.key}
                   isNumeric={col.isNumeric}
-                  onResize={onColumnResize}
+                  onResize={handleColumnResize}
                   onClick={() => requestSort(col.key as keyof StockData)}
                 >
-                  {col.label}{getSortIndicator(col.key as keyof StockData)}
+                  {col.label}
+                  {getSortIndicator(col.key as keyof StockData)}
+                  {['change', 'gap'].includes(col.key) && (
+                     <div onClick={e => e.stopPropagation()} style={{marginTop: '4px'}}>
+                      <select onChange={e => handleFilterChange(col.key as keyof StockData, e.target.value)} defaultValue="all" style={styles.filterDropdown}>
+                        <option value="all">All</option>
+                        <option value=">5, 1-10">&gt;5, 1-10</option>
+                      </select>
+                    </div>
+                  )}
+                  {['spdc', 'sopen', 'premarket'].includes(col.key) && (
+                     <div onClick={e => e.stopPropagation()} style={{marginTop: '4px'}}>
+                      <select onChange={e => handleFilterChange(col.key as keyof StockData, e.target.value)} defaultValue="all" style={styles.filterDropdown}>
+                        <option value="all">All</option>
+                        <option value="yes">Yes</option>
+                        <option value="no">No</option>
+                      </select>
+                    </div>
+                  )}
                 </ResizableTh>
               ))}
             </tr>
-            <tr style={styles.filterRow}>
-              {columns.map(col => {
-                const key = col.key as keyof StockData;
-                if (['spdc', 'sopen', 'premarket'].includes(key)) {
-                  return (
-                    <td key={`${key}-filter`}>
-                      <select style={styles.filterInput} value={filters[key] || 'all'} onChange={e => handleFilterChange(key, e.target.value)}>
-                        <option value="all">All</option><option value="yes">Yes</option><option value="no">No</option>
-                      </select>
-                    </td>
-                  );
-                }
-                if (['ltp', 'change', 'gap'].includes(key)) {
-                  return (
-                    <td key={`${key}-filter`}>
-                      <input type="text" style={styles.filterInput} placeholder=">5, 1-10..." value={filters[key] || ''} onChange={e => handleFilterChange(key, e.target.value)} />
-                    </td>
-                  );
-                }
-                return <td key={`${key}-filter`}>{/* Empty cell for non-filterable columns */}</td>;
-              })}
-            </tr>
           </thead>
-          <tbody>
+          <tbody onScroll={(e) => e.stopPropagation()}>
             {filteredAndSortedStocks.map(stock => (
-              <StockRow key={stock.symbol} stock={stock} />
+              <StockRow 
+                key={stock.symbol} 
+                stock={stock}
+                columns={columns} 
+              />
             ))}
           </tbody>
         </table>
       </div>
-      <div style={styles.resizeHandle} onMouseDown={handleMouseDown}>
+      <div style={styles.resizeHandleVertical} onMouseDown={handleHeightResize}>
+        <div style={styles.resizeHandleIndicator}></div>
+      </div>
+      <div style={styles.resizeHandleHorizontal} onMouseDown={handleWidthResize}>
         <div style={styles.resizeHandleIndicator}></div>
       </div>
     </div>
@@ -426,7 +519,7 @@ function getChangeColor(change: number): string {
   if (change < 0) {
     return 'var(--negative-color)';
   }
-  return 'var(--text-color)';
+  return 'inherit';
 }
 
 // --- Resizable Table Header Component ---
@@ -441,9 +534,10 @@ const ResizableTh = ({ children, columnKey, isNumeric, onResize, onClick }: {
 
   const handleMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
-    e.stopPropagation(); // Prevent sort click
+    e.stopPropagation();
+    
     const startX = e.clientX;
-    const startWidth = thRef.current?.offsetWidth || 0;
+    const startWidth = thRef.current ? thRef.current.offsetWidth : 0;
 
     const handleMouseMove = (moveEvent: MouseEvent) => {
       const newWidth = startWidth + (moveEvent.clientX - startX);
@@ -451,84 +545,118 @@ const ResizableTh = ({ children, columnKey, isNumeric, onResize, onClick }: {
     };
 
     const handleMouseUp = () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
     };
 
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
   };
 
   return (
-    <th 
+    <th
       ref={thRef}
       onClick={onClick}
       style={{
-        ...styles.th, 
-        ...(isNumeric ? styles.thNumeric : {})
+        ...styles.th,
+        textAlign: isNumeric ? 'right' : 'left',
       }}
     >
       {children}
       <div 
-        onMouseDown={handleMouseDown} 
-        style={styles.resizeHandleTh}
+        onMouseDown={handleMouseDown}
+        style={styles.columnResizeHandle}
       />
     </th>
   );
 };
 
 // --- Stock Row Component ---
-const StockRow = ({ stock }: { stock: StockData }) => {
-  const changeColor = getChangeColor(stock.change);
-  const rowRef = React.useRef<HTMLTableRowElement>(null);
-  const prevLtp = React.useRef(stock.ltp);
+const StockRow = ({ stock, columns }: { stock: StockData; columns: { key: keyof StockData }[] }) => {
+  const [flashClass, setFlashClass] = useState('');
+  const prevLtpRef = React.useRef(stock.ltp);
 
   useEffect(() => {
-    const row = rowRef.current;
-    if (!row) return;
+    // Only flash if the LTP has actually changed
+    if (prevLtpRef.current !== stock.ltp) {
+      if (stock.ltp > prevLtpRef.current) {
+        setFlashClass('flash-up');
+      } else {
+        setFlashClass('flash-down');
+      }
 
-    if (stock.ltp > prevLtp.current) {
-      row.classList.add('flash-up');
-    } else if (stock.ltp < prevLtp.current) {
-      row.classList.add('flash-down');
+      // Set a timer to remove the flash class
+      const timer = setTimeout(() => {
+        setFlashClass('');
+      }, 700);
+
+      // Update the ref to the new LTP
+      prevLtpRef.current = stock.ltp;
+
+      // Cleanup the timer if the component re-renders before it fires
+      return () => clearTimeout(timer);
     }
-
-    prevLtp.current = stock.ltp;
-
-    const timeoutId = setTimeout(() => {
-      row.classList.remove('flash-up', 'flash-down');
-    }, 700); // Animation duration
-
-    return () => clearTimeout(timeoutId);
   }, [stock.ltp]);
 
   return (
-    <tr ref={rowRef}>
-      <td style={styles.td}>{stock.symbol.replace('NSE:', '').replace('-EQ', '')}</td>
-      <td style={{...styles.td, ...styles.tdNumeric}}>{stock.ltp?.toFixed(2)}</td>
-      <td style={{...styles.td, ...styles.tdNumeric, color: changeColor}}>{stock.change?.toFixed(2)}%</td>
-      <td style={styles.td}>{stock.spdc}</td>
-      <td style={styles.td}>{stock.sopen}</td>
-      <td style={styles.td}>{stock.premarket}</td>
-      <td style={{...styles.td, ...styles.tdNumeric}}>{stock.gap?.toFixed(2)}%</td>
-      <td style={{...styles.td, ...styles.tdNumeric}}>{stock.newsWeight}</td>
-      <td style={styles.td} title={stock.description}>
-        {stock.description && stock.description.length > 25 
-            ? `${stock.description.substring(0, 25)}...` 
-            : stock.description || '-'}
-      </td>
+    <tr className={flashClass}>
+      {columns.map(({ key }) => {
+        const value = stock[key];
+        let displayValue: React.ReactNode = value !== undefined && value !== null ? String(value) : '-';
+        let style: React.CSSProperties = {};
+        let cellTitle: string | undefined = undefined;
+
+        if (key === 'symbol') {
+          // Strip NSE: and -EQ, show tooltip, truncate
+          if (typeof displayValue === 'string') {
+            const cleanSymbol = displayValue.replace('NSE:', '').replace('-EQ', '');
+            cellTitle = displayValue;
+            displayValue = cleanSymbol;
+          }
+          style = { ...style, maxWidth: 120, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
+        } else if (key === 'description') {
+          if (typeof displayValue === 'string') {
+            cellTitle = displayValue;
+            style = { ...style, maxWidth: 250, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
+            if (displayValue.length > 25) {
+              displayValue = displayValue.substring(0, 25) + '...';
+            }
+          } else {
+            style = { ...style, maxWidth: 250, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
+          }
+        } else if (key === 'change') {
+          const numValue = Number(value);
+          if (!isNaN(numValue)) {
+            style.color = getChangeColor(numValue);
+            displayValue = `${numValue.toFixed(2)}%`;
+          }
+        } else if (key === 'ltp' || key === 'gap' || key === 'newsWeight') {
+           style.textAlign = 'right';
+           if (typeof value === 'number') {
+             displayValue = value.toFixed(2);
+           }
+        }
+
+        return (
+          <td key={key} style={{ ...styles.td, ...style, textAlign: (key === 'ltp' || key === 'change' || key === 'gap' || key === 'newsWeight') ? 'right' : 'left' }} title={cellTitle}>
+            {displayValue}
+          </td>
+        );
+      })}
     </tr>
   );
 };
 
 // --- Inline CSS Styles ---
 // Using inline styles for simplicity, but this can be moved to CSS files for larger apps
-const styles = {
+const styles: { [key: string]: React.CSSProperties } = {
   app: {
-    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif',
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
     background: 'var(--bg-color, #0d1117)',
     color: 'var(--text-color, #c9d1d9)',
     minHeight: '100vh',
+    display: 'flex',
+    flexDirection: 'column',
   },
   header: {
     padding: '10px 20px',
@@ -540,8 +668,31 @@ const styles = {
     position: 'sticky',
     top: 0,
     zIndex: 1000,
-  } as React.CSSProperties,
-  headerH1: { fontSize: '22px', color: 'var(--primary-color, #24d48a)' },
+  },
+  headerTitleContainer: {
+    display: 'flex',
+    gap: '10px',
+  },
+  dashboardButton: {
+    background: '#21262d',
+    color: 'var(--text-color)',
+    border: '1px solid var(--border-color)',
+    padding: '10px 20px',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    fontSize: '1rem',
+    transition: 'background-color 0.2s, border-color 0.2s',
+  },
+  activeDashboardButton: {
+    background: 'var(--primary-color)',
+    color: '#0d1117',
+    borderColor: 'var(--primary-color)',
+    fontWeight: 'bold',
+  },
+  disabledDashboardButton: {
+      cursor: 'not-allowed',
+      opacity: 0.5,
+  },
   controls: {
     flexGrow: 1,
     display: 'flex',
@@ -566,98 +717,118 @@ const styles = {
     color: 'var(--text-color, #c9d1d9)',
     cursor: 'pointer',
   },
-  stats: { display: 'flex', gap: '20px', fontSize: '14px' } as React.CSSProperties,
-  statItem: { display: 'flex', flexDirection: 'column', textAlign: 'center' } as React.CSSProperties,
-  statValue: { fontWeight: 'bold' },
-  strategyContainer: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fill, minmax(680px, 1fr))',
-    gap: '16px',
-    padding: '16px',
-    alignItems: 'start', // Prevent items in the same row from stretching to the same height
-  } as React.CSSProperties,
-  strategyCard: {
-    background: 'var(--card-bg-color, #161b22)',
-    border: '1px solid var(--border-color, #30363d)',
-    borderRadius: '6px',
+  stats: { display: 'flex', gap: '20px', fontSize: '14px' },
+  statItem: {
     display: 'flex',
     flexDirection: 'column',
-    position: 'relative', // Needed for positioning the resize handle
-    paddingBottom: '10px', // Space for the resize handle
-  } as React.CSSProperties,
-  strategyTitle: {
-    fontSize: '16px',
-    fontWeight: 600,
-    padding: '12px',
-    borderBottom: '1px solid var(--border-color, #30363d)',
-    color: 'var(--text-color, #c9d1d9)',
+    alignItems: 'flex-end',
   },
+  statValue: { fontWeight: 'bold' },
+  strategyContainer: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: '16px',
+    padding: '16px',
+    alignItems: 'flex-start',
+    flex: '1 1 auto', // Allow container to grow and shrink
+    overflowY: 'auto', // Add scroll for vertical overflow
+    minHeight: 0, // Needed for flex scrolling
+  },
+  strategyCard: {
+    background: 'var(--card-bg-color, #161b22)',
+    borderRadius: '8px',
+    border: '1px solid var(--border-color, #30363d)',
+    display: 'flex',
+    flexDirection: 'column',
+    position: 'relative', // for resize handle
+    overflow: 'hidden', // to contain children
+    flexShrink: 0, // Prevent cards from shrinking
+  },
+  strategyTitle: {
+    padding: '10px 15px',
+    margin: 0,
+    fontSize: '18px',
+    fontWeight: 600,
+    borderBottom: '1px solid var(--border-color, #30363d)',
+  },
+  tableWrapper: { overflow: 'auto', flexGrow: 1 },
   table: {
+    width: '100%',
     borderCollapse: 'collapse',
-  } as React.CSSProperties,
-  tableWrapper: { overflow: 'auto', flexGrow: 1 } as React.CSSProperties,
+  },
   th: {
     padding: '8px 12px',
     textAlign: 'left',
     fontSize: '12px',
     background: '#1f242c',
-    position: 'sticky',
-    top: 0,
-    zIndex: 1,
-    cursor: 'pointer',
     userSelect: 'none',
-  } as React.CSSProperties,
+    position: 'relative',
+    borderRight: '1px solid var(--border-color)',
+    zIndex: 2,
+  },
   thNumeric: {
     textAlign: 'right',
-  } as React.CSSProperties,
+  },
   td: {
-    padding: '8px 12px',
-    textAlign: 'left',
+    padding: '8px 10px',
+    borderBottom: '1px solid var(--border-color)',
     fontSize: '12px',
-    borderTop: '1px solid var(--border-color, #30363d)',
-  } as React.CSSProperties,
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    maxWidth: 250,
+  },
   tdNumeric: {
-    textAlign: 'right' as const,
-  } as React.CSSProperties,
-  resizeHandle: {
+    textAlign: 'right',
+  },
+  resizeHandleVertical: {
     position: 'absolute',
     bottom: 0,
     left: 0,
-    width: '100%',
+    right: 0,
     height: '10px',
     cursor: 'ns-resize',
-    zIndex: 10,
-  } as React.CSSProperties,
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1,
+  },
+  resizeHandleHorizontal: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    width: '10px',
+    cursor: 'ew-resize',
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1,
+  },
   resizeHandleIndicator: {
-    width: '1px',
-    height: '16px',
-    background: 'var(--border-color)',
-  } as React.CSSProperties,
-  filterRow: {
-    background: '#1f242c',
-    position: 'sticky',
-    top: '33px',
-    zIndex: 2,
-  } as React.CSSProperties,
-  filterInput: {
-    width: '100%',
-    background: 'var(--bg-color)',
+    width: '40px',
+    height: '4px',
+    backgroundColor: 'var(--border-color, #30363d)',
+    borderRadius: '2px',
+  },
+  filterDropdown: {
+    backgroundColor: 'var(--bg-color)',
     color: 'var(--text-color)',
     border: '1px solid var(--border-color)',
     borderRadius: '4px',
-    padding: '4px 6px',
-    fontSize: '11px',
-    boxSizing: 'border-box' as const,
+    padding: '2px',
+    fontSize: '10px',
+    marginTop: '4px',
   },
-  resizeHandleTh: {
+  columnResizeHandle: {
     position: 'absolute',
     top: 0,
     right: 0,
     bottom: 0,
     width: '5px',
     cursor: 'col-resize',
-    zIndex: 2,
-  } as React.CSSProperties,
+    zIndex: 10,
+  },
 };
 
 export default App;
