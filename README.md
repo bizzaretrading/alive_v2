@@ -98,6 +98,6 @@ npm run dev
 
 ## 📣 Major Contributors
 
-- UI/UX, backend, and architecture: [Your Name Here]
+- UI/UX, backend, and architecture: [Shashank]
 
 --- 
