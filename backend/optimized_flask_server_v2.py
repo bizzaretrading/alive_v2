@@ -439,7 +439,7 @@ def handle_initial_data():
         
         # --- FIX: Use 'chp' from Fyers for change percentage ---
         change_percent = live_data.get('chp', 0)
-
+        
         combined_data = {
             'symbol': symbol,
             'ltp': live_data.get('ltp', 0),

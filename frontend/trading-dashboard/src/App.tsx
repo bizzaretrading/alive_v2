@@ -322,7 +322,7 @@ function App() {
             onClose={closeAlertModal}
             socket={socket}
             existingAlert={editingAlert}
-          />
+        />
         )}
 
         <div style={styles.strategyContainer}>
@@ -442,9 +442,9 @@ const AlertModal = ({ onClose, socket, existingAlert }: {
         <div style={styles.modalHeader} onMouseDown={handleMouseDown}>
           <h3>{isEditMode ? 'Edit Alert' : 'Create New Alert'}</h3>
           <button onClick={onClose} style={styles.modalCloseButton}>&times;</button>
-        </div>
+    </div>
         <form onSubmit={handleSubmit} style={styles.alertForm}>
-          <input
+        <input
             type="text"
             placeholder="Symbol (e.g., SBIN)"
             value={symbol}
@@ -469,11 +469,11 @@ const AlertModal = ({ onClose, socket, existingAlert }: {
           />
           <button type="submit" style={styles.createAlertButton}>
             {isEditMode ? 'Update Alert' : 'Add Alert'}
-          </button>
+        </button>
         </form>
-      </div>
     </div>
-  );
+      </div>
+);
 };
 
 // --- Strategy Card Component ---
