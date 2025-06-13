@@ -3,7 +3,7 @@
 Welcome to Version 4 of the Live Trading Dashboard!  
 This release is a major overhaul, featuring a robust Dockerized backend, PostgreSQL database, real-time alert system, and a modern, highly interactive React/TypeScript frontend.
 
-![Live Trading Dashboard Screenshot](./assets/dashboard-screenshot.png)
+![Live Trading Dashboard V4 Screenshot](./assets/dashboard-screenshot_v4.png)
 
 ---
 
