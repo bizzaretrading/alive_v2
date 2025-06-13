@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import io from 'socket.io-client';
 import React from 'react';
 
@@ -14,6 +14,14 @@ interface StockData {
   newsWeight?: number;
   spdc?: string;
   sopen?: string;
+}
+
+interface Alert {
+  id: number;
+  symbol: string;
+  operator: '>' | '<' | '>=' | '<=';
+  value: number;
+  triggered: boolean;
 }
 
 interface StrategyGroup {
@@ -50,18 +58,22 @@ function App() {
   const [strategies, setStrategies] = useState<AllStrategies>({});
   const [status, setStatus] = useState('Connecting...');
   const [filter, setFilter] = useState('');
+  const [alerts, setAlerts] = useState<Alert[]>([]);
   const [layoutResetKey, setLayoutResetKey] = useState(0);
   const [dashboardView, setDashboardView] = useState<DashboardView>('all'); // 'all', 'morning', 'mid-day', 'afternoon'
+  const [lastUpdateTime, setLastUpdateTime] = useState<Date | null>(null);
+  const [isAlertModalOpen, setIsAlertModalOpen] = useState(false);
+  const [editingAlert, setEditingAlert] = useState<Alert | null>(null);
   const [columnWidths] = useState<Record<string, number>>({
-    symbol: 120,
-    ltp: 90,
-    change: 90,
-    spdc: 80,
-    sopen: 80,
-    premarket: 80,
-    gap: 90,
-    newsWeight: 80,
-    description: 250,
+    symbol: 80,
+    ltp: 70,
+    change: 70,
+    spdc: 55,
+    sopen: 55,
+    premarket: 55,
+    gap: 70,
+    newsWeight: 55,
+    description: 50,
   });
 
   const handleResetLayout = () => {
@@ -72,8 +84,9 @@ function App() {
     // --- Socket Event Listeners ---
     socket.on('connect', () => {
       setStatus('Connected');
-      console.log('Socket connected, requesting initial data...');
+      console.log('Socket connected, requesting initial data and alerts...');
       socket.emit('request_initial_data');
+      socket.emit('get_alerts');
     });
 
     socket.on('disconnect', () => {
@@ -84,6 +97,8 @@ function App() {
     socket.on('initial_data', (data: AllStrategies) => {
       console.log('Received initial data:', data);
       setStrategies(data);
+      setStatus('Connected');
+      setLastUpdateTime(new Date());
     });
 
     socket.on('stock_update', (updatedStrategies: AllStrategies) => {
@@ -102,6 +117,27 @@ function App() {
         }
         return newStrategies;
       });
+      setLastUpdateTime(new Date());
+    });
+
+    // --- Alert System Listeners ---
+    socket.on('update_alerts', (receivedAlerts: Alert[]) => {
+      console.log('Received updated alerts:', receivedAlerts);
+      setAlerts(receivedAlerts);
+    });
+
+    socket.on('alert_triggered', (triggeredAlert: Alert) => {
+      // Find the clean symbol name for the notification
+      const symbolTofind = triggeredAlert.symbol.replace('NSE:', '').replace('-EQ', '');
+      const allStocks = Object.values(strategies).flatMap(group => Object.values(group));
+      const stockInfo = allStocks.find(stock => stock.symbol.includes(symbolTofind));
+      const cleanSymbol = stockInfo ? stockInfo.symbol : triggeredAlert.symbol;
+
+      alert(
+        `🔔 ALERT TRIGGERED! 🔔\n\n` +
+        `Symbol: ${cleanSymbol}\n` +
+        `Condition: Price ${triggeredAlert.operator} ${triggeredAlert.value}`
+      );
     });
 
     // --- Cleanup on component unmount ---
@@ -110,8 +146,10 @@ function App() {
       socket.off('disconnect');
       socket.off('initial_data');
       socket.off('stock_update');
+      socket.off('update_alerts');
+      socket.off('alert_triggered');
     };
-  }, []);
+  }, [strategies]);
 
   const visibleColumns = useMemo(() => {
     switch (dashboardView) {
@@ -155,6 +193,22 @@ function App() {
 
   const sortedStrategyNames = Object.keys(filteredStrategies).sort();
 
+  const handleDeleteAlert = (alertId: number | undefined) => {
+    if (alertId) {
+        socket.emit('delete_alert', { id: alertId });
+    }
+  };
+
+  const handleEditAlert = (alert: Alert) => {
+    setEditingAlert(alert);
+    setIsAlertModalOpen(true);
+  };
+
+  const closeAlertModal = () => {
+    setIsAlertModalOpen(false);
+    setEditingAlert(null);
+  };
+
   return (
     <>
       <style>{`
@@ -197,14 +251,80 @@ function App() {
         }
       `}</style>
       <div style={styles.app}>
-        <Header 
-          status={status} 
-          filter={filter} 
-          onFilterChange={setFilter} 
-          onResetLayout={handleResetLayout} 
-          dashboardView={dashboardView}
-          onDashboardViewChange={setDashboardView}
-        />
+        <header style={styles.header}>
+            <div style={styles.headerLeft}>
+                <h1 style={styles.headerTitle}>Trading Dashboard</h1>
+                <span style={{
+                    ...styles.statusIndicator,
+                    backgroundColor: status === 'Connected' ? 'var(--positive-color)' : 'var(--negative-color)',
+                }}></span>
+                <span style={styles.statusText}>{status}</span>
+            </div>
+            
+            <div style={styles.headerCenter}>
+                {dashboardButtonViews.map((view) => (
+                    <button
+                        key={view.id}
+                        onClick={() => setDashboardView(view.id)}
+                        style={dashboardView === view.id ? styles.viewButtonActive : styles.viewButton}
+                    >
+                        {view.label}
+                    </button>
+                ))}
+            </div>
+
+            <div style={styles.headerRight}>
+                {lastUpdateTime && (
+                    <span style={styles.timeDisplay}>
+                        {lastUpdateTime.toLocaleDateString()} {lastUpdateTime.toLocaleTimeString()}
+                    </span>
+                )}
+                <input
+                    type="text"
+                    placeholder="Filter..."
+                    value={filter}
+                    onChange={e => setFilter(e.target.value)}
+                    style={styles.filterInput}
+                />
+                <button onClick={() => setIsAlertModalOpen(true)} style={styles.headerButton}>Create Alert</button>
+                <button onClick={handleResetLayout} style={styles.headerButton}>Reset Layout</button>
+            </div>
+        </header>
+
+        {alerts.length > 0 && (
+          <div style={styles.activeAlertsBar}>
+            <span style={styles.activeAlertsTitle}>Active Alerts:</span>
+            <div style={styles.alertsListContainer}>
+              {alerts.map(alert => (
+                <span 
+                  key={alert.id} 
+                  style={alert.triggered ? styles.alertTagTriggered : styles.alertTag}
+                  onClick={() => handleEditAlert(alert)}
+                >
+                  {alert.symbol.replace('NSE:', '').replace('-EQ', '')} {alert.operator} {alert.value}
+                  <button 
+                    onClick={(e) => {
+                      e.stopPropagation(); // Prevent modal from opening
+                      handleDeleteAlert(alert.id);
+                    }} 
+                    style={styles.alertDeleteButton}
+                  >
+                    &times;
+                  </button>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+        
+        {isAlertModalOpen && (
+          <AlertModal
+            onClose={closeAlertModal}
+            socket={socket}
+            existingAlert={editingAlert}
+          />
+        )}
+
         <div style={styles.strategyContainer}>
           {sortedStrategyNames.map(strategyName => (
             <StrategyCard
@@ -233,60 +353,128 @@ const dashboardButtonViews: { id: DashboardView; label: string }[] = [
 ];
 
 // --- Header Component ---
-const Header = ({ 
-  status, 
-  filter, 
-  onFilterChange, 
-  onResetLayout,
-  dashboardView,
-  onDashboardViewChange,
-}: { 
-  status: string, 
-  filter: string, 
-  onFilterChange: (value: string) => void, 
-  onResetLayout: () => void,
-  dashboardView: DashboardView,
-  onDashboardViewChange: (view: DashboardView) => void,
-}) => (
-  <header style={styles.header}>
-    <div style={styles.headerTitleContainer}>
-        {dashboardButtonViews.map(({ id, label }) => (
-            <button
-                key={id}
-                onClick={() => onDashboardViewChange(id)}
-                disabled={id === 'mid-day' || id === 'afternoon'}
-                style={{
-                    ...styles.dashboardButton,
-                    ...(dashboardView === id ? styles.activeDashboardButton : {}),
-                    ...((id === 'mid-day' || id === 'afternoon') ? styles.disabledDashboardButton : {}),
-                }}
-            >
-                {label}
-            </button>
-        ))}
-    </div>
-    <div style={styles.controls}>
-        <input
+const AlertModal = ({ onClose, socket, existingAlert }: { 
+  onClose: () => void; 
+  socket: any;
+  existingAlert: Alert | null;
+}) => {
+  const [symbol, setSymbol] = useState('');
+  const [operator, setOperator] = useState('>=');
+  const [value, setValue] = useState('');
+  const modalRef = useRef<HTMLDivElement>(null);
+  
+  // State for dragging the modal
+  const [position, setPosition] = useState({ x: 0, y: 0 });
+  const dragInfo = useRef({ isDragging: false, startX: 0, startY: 0, initialX: 0, initialY: 0 });
+
+  const isEditMode = existingAlert !== null;
+
+  useEffect(() => {
+    // Center the modal initially
+    if (modalRef.current) {
+      const { clientWidth, clientHeight } = modalRef.current;
+      setPosition({
+        x: window.innerWidth / 2 - clientWidth / 2,
+        y: window.innerHeight / 2 - clientHeight / 2,
+      });
+    }
+
+    if (isEditMode) {
+      setSymbol(existingAlert.symbol.replace('NSE:', '').replace('-EQ', ''));
+      setOperator(existingAlert.operator);
+      setValue(String(existingAlert.value));
+    }
+  }, [isEditMode, existingAlert]);
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (!modalRef.current) return;
+    dragInfo.current = {
+      isDragging: true,
+      startX: e.clientX,
+      startY: e.clientY,
+      initialX: modalRef.current.offsetLeft,
+      initialY: modalRef.current.offsetTop,
+    };
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  };
+
+  const handleMouseMove = (e: MouseEvent) => {
+    if (!dragInfo.current.isDragging) return;
+    const dx = e.clientX - dragInfo.current.startX;
+    const dy = e.clientY - dragInfo.current.startY;
+    setPosition({
+      x: dragInfo.current.initialX + dx,
+      y: dragInfo.current.initialY + dy,
+    });
+  };
+
+  const handleMouseUp = () => {
+    dragInfo.current.isDragging = false;
+    document.removeEventListener('mousemove', handleMouseMove);
+    document.removeEventListener('mouseup', handleMouseUp);
+  };
+  
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (symbol && value) {
+      const alertData = {
+        symbol: symbol.toUpperCase(),
+        operator,
+        value: parseFloat(value),
+      };
+
+      if (isEditMode) {
+        socket.emit('update_alert', { ...alertData, id: existingAlert.id });
+      } else {
+        socket.emit('create_alert', alertData);
+      }
+      onClose();
+    }
+  };
+
+  return (
+    <div style={styles.modalBackdrop}>
+      <div 
+        style={{ ...styles.modalContent, top: `${position.y}px`, left: `${position.x}px` }} 
+        ref={modalRef}
+      >
+        <div style={styles.modalHeader} onMouseDown={handleMouseDown}>
+          <h3>{isEditMode ? 'Edit Alert' : 'Create New Alert'}</h3>
+          <button onClick={onClose} style={styles.modalCloseButton}>&times;</button>
+        </div>
+        <form onSubmit={handleSubmit} style={styles.alertForm}>
+          <input
             type="text"
-            placeholder="Filter by symbol..."
-            value={filter}
-            onChange={(e) => onFilterChange(e.target.value)}
-            style={styles.globalFilterInput}
-        />
-        <button onClick={onResetLayout} style={styles.button}>
-            Reset Layout
-        </button>
-    </div>
-    <div style={styles.stats}>
-      <div style={styles.statItem}>
-        <span>Status</span>
-        <span style={{...styles.statValue, color: status === 'Connected' ? 'var(--positive-color)' : 'var(--negative-color)'}}>
-          {status}
-        </span>
+            placeholder="Symbol (e.g., SBIN)"
+            value={symbol}
+            onChange={e => setSymbol(e.target.value)}
+            style={styles.alertInput}
+            autoFocus
+            disabled={isEditMode} // Cannot change symbol when editing
+          />
+          <select value={operator} onChange={e => setOperator(e.target.value as any)} style={styles.alertInput}>
+            <option value=">=">At or Above</option>
+            <option value="<=">At or Below</option>
+            <option value=">">Above</option>
+            <option value="<">Below</option>
+          </select>
+          <input
+            type="number"
+            placeholder="Price"
+            value={value}
+            onChange={e => setValue(e.target.value)}
+            style={styles.alertInput}
+            step="any"
+          />
+          <button type="submit" style={styles.createAlertButton}>
+            {isEditMode ? 'Update Alert' : 'Add Alert'}
+          </button>
+        </form>
       </div>
     </div>
-  </header>
-);
+  );
+};
 
 // --- Strategy Card Component ---
 const StrategyCard = ({ 
@@ -310,15 +498,21 @@ const StrategyCard = ({
     sopen: 'all',
     premarket: 'all',
   });
-  const [height, setHeight] = useState(400);
-  const [width, setWidth] = useState(800);
+  
+  const calculatedInitialWidth = useMemo(() => {
+    // Sum of visible column widths + padding for scrollbar etc.
+    return columns.reduce((sum, col) => sum + (initialColumnWidths[col.key] || 0), 0) + 20;
+  }, [columns, initialColumnWidths]);
+
+  const [height, setHeight] = useState(260);
+  const [width, setWidth] = useState(calculatedInitialWidth);
   const [currentColumnWidths, setCurrentColumnWidths] = useState(initialColumnWidths);
 
   useEffect(() => {
-    setHeight(400);
-    setWidth(800);
+    setHeight(260);
+    setWidth(calculatedInitialWidth);
     setCurrentColumnWidths(initialColumnWidths);
-  }, [layoutResetKey, initialColumnWidths]);
+  }, [layoutResetKey, initialColumnWidths, calculatedInitialWidth]);
 
   const handleColumnResize = (key: string, newWidth: number) => {
     setCurrentColumnWidths(prev => ({
@@ -351,7 +545,6 @@ const StrategyCard = ({
     const startX = e.clientX;
     const startWidth = width;
     const startColWidths = { ...currentColumnWidths };
-    const totalStartColWidth = Object.values(startColWidths).reduce((sum, w) => sum + w, 0);
 
     const handleMouseMove = (moveEvent: MouseEvent) => {
       const newWidth = startWidth + (moveEvent.clientX - startX);
@@ -377,7 +570,7 @@ const StrategyCard = ({
     window.addEventListener('mouseup', handleMouseUp);
   };
   
-  const totalCurrentColumnWidth = useMemo(() => Object.values(currentColumnWidths).reduce((s, w) => s + w, 0), [currentColumnWidths]);
+  const totalCurrentColumnWidth = useMemo(() => columns.reduce((sum, col) => sum + (currentColumnWidths[col.key] || 0), 0), [columns, currentColumnWidths]);
 
   const filteredAndSortedStocks = useMemo(() => {
     let stockArray = Object.values(stocks);
@@ -463,7 +656,6 @@ const StrategyCard = ({
                 <ResizableTh
                   key={col.key}
                   columnKey={col.key}
-                  isNumeric={col.isNumeric}
                   onResize={handleColumnResize}
                   onClick={() => requestSort(col.key as keyof StockData)}
                 >
@@ -496,6 +688,7 @@ const StrategyCard = ({
                 key={stock.symbol} 
                 stock={stock}
                 columns={columns} 
+                columnWidths={currentColumnWidths}
               />
             ))}
           </tbody>
@@ -523,10 +716,9 @@ function getChangeColor(change: number): string {
 }
 
 // --- Resizable Table Header Component ---
-const ResizableTh = ({ children, columnKey, isNumeric, onResize, onClick }: {
+const ResizableTh = ({ children, columnKey, onResize, onClick }: {
   children: React.ReactNode;
   columnKey: string;
-  isNumeric?: boolean;
   onResize: (key: string, newWidth: number) => void;
   onClick: () => void;
 }) => {
@@ -559,7 +751,7 @@ const ResizableTh = ({ children, columnKey, isNumeric, onResize, onClick }: {
       onClick={onClick}
       style={{
         ...styles.th,
-        textAlign: isNumeric ? 'right' : 'left',
+        textAlign: (columnKey === 'symbol' || columnKey === 'description') ? 'left' : 'center',
       }}
     >
       {children}
@@ -572,7 +764,11 @@ const ResizableTh = ({ children, columnKey, isNumeric, onResize, onClick }: {
 };
 
 // --- Stock Row Component ---
-const StockRow = ({ stock, columns }: { stock: StockData; columns: { key: keyof StockData }[] }) => {
+const StockRow = ({ stock, columns, columnWidths }: { 
+  stock: StockData; 
+  columns: { key: keyof StockData }[];
+  columnWidths: Record<string, number>;
+}) => {
   const [flashClass, setFlashClass] = useState('');
   const prevLtpRef = React.useRef(stock.ltp);
 
@@ -603,7 +799,7 @@ const StockRow = ({ stock, columns }: { stock: StockData; columns: { key: keyof 
       {columns.map(({ key }) => {
         const value = stock[key];
         let displayValue: React.ReactNode = value !== undefined && value !== null ? String(value) : '-';
-        let style: React.CSSProperties = {};
+        let style: React.CSSProperties = { maxWidth: columnWidths[key] };
         let cellTitle: string | undefined = undefined;
 
         if (key === 'symbol') {
@@ -613,16 +809,9 @@ const StockRow = ({ stock, columns }: { stock: StockData; columns: { key: keyof 
             cellTitle = displayValue;
             displayValue = cleanSymbol;
           }
-          style = { ...style, maxWidth: 120, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
         } else if (key === 'description') {
           if (typeof displayValue === 'string') {
             cellTitle = displayValue;
-            style = { ...style, maxWidth: 250, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
-            if (displayValue.length > 25) {
-              displayValue = displayValue.substring(0, 25) + '...';
-            }
-          } else {
-            style = { ...style, maxWidth: 250, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
           }
         } else if (key === 'change') {
           const numValue = Number(value);
@@ -638,7 +827,11 @@ const StockRow = ({ stock, columns }: { stock: StockData; columns: { key: keyof 
         }
 
         return (
-          <td key={key} style={{ ...styles.td, ...style, textAlign: (key === 'ltp' || key === 'change' || key === 'gap' || key === 'newsWeight') ? 'right' : 'left' }} title={cellTitle}>
+          <td 
+            key={key} 
+            style={{ ...styles.td, ...style, textAlign: (key === 'symbol' || key === 'description') ? 'left' : 'center' }} 
+            title={cellTitle}
+          >
             {displayValue}
           </td>
         );
@@ -659,7 +852,7 @@ const styles: { [key: string]: React.CSSProperties } = {
     flexDirection: 'column',
   },
   header: {
-    padding: '10px 20px',
+    padding: '4px 15px',
     background: 'var(--card-bg-color, #161b22)',
     borderBottom: '1px solid var(--border-color, #30363d)',
     display: 'flex',
@@ -668,62 +861,92 @@ const styles: { [key: string]: React.CSSProperties } = {
     position: 'sticky',
     top: 0,
     zIndex: 1000,
+    flexShrink: 0,
   },
-  headerTitleContainer: {
+  headerLeft: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+    flex: 1,
+  },
+  headerCenter: {
+    display: 'flex',
+    justifyContent: 'center',
+    gap: '8px',
+    flex: 2,
+  },
+  headerRight: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: '12px',
+    flex: 1,
+  },
+  headerTitle: {
+    fontSize: '16px',
+    margin: 0,
+    fontWeight: 600,
+    whiteSpace: 'nowrap',
+  },
+  statusIndicator: {
+    width: '10px',
+    height: '10px',
+    borderRadius: '50%',
+    display: 'inline-block',
+  },
+  statusText: {
+    fontSize: '12px',
+    fontWeight: 'normal',
+    whiteSpace: 'nowrap',
+  },
+  viewSelector: {
     display: 'flex',
     gap: '10px',
   },
-  dashboardButton: {
+  viewButton: {
     background: '#21262d',
     color: 'var(--text-color)',
     border: '1px solid var(--border-color)',
-    padding: '10px 20px',
+    padding: '5px 12px',
     borderRadius: '6px',
     cursor: 'pointer',
-    fontSize: '1rem',
+    fontSize: '13px',
     transition: 'background-color 0.2s, border-color 0.2s',
   },
-  activeDashboardButton: {
+  viewButtonActive: {
+    padding: '5px 12px',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    fontSize: '13px',
     background: 'var(--primary-color)',
     color: '#0d1117',
-    borderColor: 'var(--primary-color)',
+    border: '1px solid var(--primary-color)',
     fontWeight: 'bold',
   },
-  disabledDashboardButton: {
-      cursor: 'not-allowed',
-      opacity: 0.5,
-  },
-  controls: {
-    flexGrow: 1,
-    display: 'flex',
-    justifyContent: 'center',
-    gap: '12px',
-  },
-  globalFilterInput: {
-    padding: '8px 12px',
-    fontSize: '14px',
+  filterInput: {
+    padding: '5px 8px',
+    fontSize: '13px',
     background: '#0d1117',
     border: '1px solid var(--border-color, #30363d)',
     borderRadius: '6px',
     color: 'var(--text-color, #c9d1d9)',
-    width: '300px',
+    width: '150px',
   },
-  button: {
-    padding: '8px 16px',
-    fontSize: '14px',
+  headerButton: {
+    padding: '5px 12px',
+    fontSize: '13px',
     background: 'var(--border-color, #30363d)',
     border: '1px solid var(--border-color, #30363d)',
     borderRadius: '6px',
     color: 'var(--text-color, #c9d1d9)',
     cursor: 'pointer',
+    whiteSpace: 'nowrap',
   },
-  stats: { display: 'flex', gap: '20px', fontSize: '14px' },
-  statItem: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'flex-end',
+  timeDisplay: {
+    fontSize: '12px',
+    color: '#8b949e',
+    whiteSpace: 'nowrap',
   },
-  statValue: { fontWeight: 'bold' },
   strategyContainer: {
     display: 'flex',
     flexWrap: 'wrap',
@@ -757,26 +980,26 @@ const styles: { [key: string]: React.CSSProperties } = {
     borderCollapse: 'collapse',
   },
   th: {
-    padding: '8px 12px',
+    position: 'sticky',
+    top: 0,
+    padding: '4px 6px',
     textAlign: 'left',
-    fontSize: '12px',
+    fontSize: '11px',
     background: '#1f242c',
     userSelect: 'none',
-    position: 'relative',
     borderRight: '1px solid var(--border-color)',
-    zIndex: 2,
+    zIndex: 3,
   },
   thNumeric: {
     textAlign: 'right',
   },
   td: {
-    padding: '8px 10px',
+    padding: '4px 6px',
     borderBottom: '1px solid var(--border-color)',
-    fontSize: '12px',
+    fontSize: '11px',
     whiteSpace: 'nowrap',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
-    maxWidth: 250,
   },
   tdNumeric: {
     textAlign: 'right',
@@ -828,6 +1051,120 @@ const styles: { [key: string]: React.CSSProperties } = {
     width: '5px',
     cursor: 'col-resize',
     zIndex: 10,
+  },
+  activeAlertsBar: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    padding: '4px 15px',
+    backgroundColor: '#0a0d11',
+    borderBottom: '1px solid var(--border-color)',
+    flexShrink: 0,
+    minHeight: '30px',
+  },
+  activeAlertsTitle: {
+    fontSize: '12px',
+    fontWeight: 'bold',
+    whiteSpace: 'nowrap',
+  },
+  alertsListContainer: {
+    display: 'flex',
+    gap: '8px',
+    overflowX: 'auto',
+    flex: 1,
+  },
+  alertTag: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '5px',
+    backgroundColor: 'var(--card-bg-color)',
+    padding: '2px 8px',
+    borderRadius: '12px',
+    fontSize: '12px',
+    whiteSpace: 'nowrap',
+    border: '1px solid var(--border-color)',
+    cursor: 'pointer',
+  },
+  alertTagTriggered: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '5px',
+    padding: '2px 8px',
+    borderRadius: '12px',
+    fontSize: '12px',
+    whiteSpace: 'nowrap',
+    backgroundColor: '#2c2c0a',
+    border: '1px solid #a1a100',
+    color: '#ffffa1',
+    textDecoration: 'line-through',
+    cursor: 'pointer',
+  },
+  alertDeleteButton: {
+    backgroundColor: 'transparent',
+    color: 'var(--negative-color)',
+    border: 'none',
+    fontSize: '16px',
+    cursor: 'pointer',
+    padding: '0',
+    lineHeight: '1',
+  },
+  modalBackdrop: {
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    zIndex: 2000,
+  },
+  modalContent: {
+    position: 'absolute',
+    background: 'var(--card-bg-color)',
+    padding: '20px',
+    borderRadius: '8px',
+    border: '1px solid var(--border-color)',
+    width: '320px',
+    boxShadow: '0 5px 15px rgba(0,0,0,0.3)',
+  },
+  modalHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderBottom: '1px solid var(--border-color)',
+    paddingBottom: '10px',
+    marginBottom: '15px',
+    cursor: 'move',
+  },
+  modalCloseButton: {
+    background: 'transparent',
+    border: 'none',
+    color: 'var(--text-color)',
+    fontSize: '24px',
+    cursor: 'pointer',
+  },
+  alertForm: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '1rem',
+  },
+  alertInput: {
+    padding: '10px 12px',
+    backgroundColor: 'var(--bg-color)',
+    border: '1px solid var(--border-color)',
+    borderRadius: '6px',
+    color: 'var(--text-color)',
+    width: '100%',
+    boxSizing: 'border-box',
+  },
+  createAlertButton: {
+    padding: '10px 15px',
+    backgroundColor: 'var(--primary-color)',
+    color: '#000',
+    border: 'none',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    fontWeight: 'bold',
+    textAlign: 'center',
   },
 };
 

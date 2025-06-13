@@ -15,6 +15,19 @@ import re
 # Get the directory where the script is located
 SCRIPT_DIR = Path(__file__).resolve().parent
 
+# --- Fix for module import ---
+# Add the 'backend' directory to the Python path to ensure modules can be found
+sys.path.insert(0, str(SCRIPT_DIR))
+
+try:
+    import optimized_flask_server_v2
+except ImportError as e:
+    print(f"❌ Fatal Error: Could not import 'optimized_flask_server_v2.py'.")
+    print(f"   Error details: {e}")
+    print(f"   Please ensure 'optimized_flask_server_v2.py' is in the same directory as this script: {SCRIPT_DIR}")
+    sys.exit(1)
+# -----------------------------
+
 def run_fyers_login():
     """Execute the fyers_login.py script."""
     fyers_login_script_path = SCRIPT_DIR / "fyers_login.py"
@@ -108,7 +121,11 @@ def check_and_install_requirements():
         'flask',
         'flask-socketio',
         'pandas',
-        'python-socketio[client]'
+        'python-socketio[client]',
+        'psycopg[binary]', # For PostgreSQL connection
+        'psycopg-pool',    # For managing connections
+        'python-dotenv',   # For reading the .env file
+        'fyers-apiv3'      # For Fyers API (historical and websocket)
     ]
     
     print("🔍 Checking required packages...")
@@ -188,11 +205,8 @@ def start_dashboard():
     """Start the optimized dashboard server by calling the server's main process function."""
     print("\n🚀 Triggering Optimized Trading Dashboard V2 Server Start...")
     try:
-        if 'optimized_flask_server_v2' in sys.modules:
+        # Now we can directly call the function since the module is imported
             optimized_flask_server_v2.start_server_process()
-        else:
-            print("❌ Critical error: optimized_flask_server_v2 module not found in sys.modules.")
-            return False 
     except AttributeError:
         print("❌ Critical error: optimized_flask_server_v2 module does not have start_server_process attribute.")
         print("Ensure 'def start_server_process():' is defined in optimized_flask_server_v2.py.")
@@ -263,17 +277,6 @@ def main():
     if not check_and_install_requirements():
         print("❌ Failed to install required packages")
         return 1
-
-    # --- Import Server Module ---
-    # This is deferred until after dependency checks
-    # Add the script's directory to the path to ensure imports work correctly
-    sys.path.insert(0, str(SCRIPT_DIR))
-    global optimized_flask_server_v2
-    try:
-        import optimized_flask_server_v2
-    except ImportError:
-        print("❌ Fatal Error: Could not import 'optimized_flask_server_v2.py'.")
-        sys.exit(1)
 
     # --- Get Dynamic CSV Path ---
     print("\n📄 Determining CSV file path...")

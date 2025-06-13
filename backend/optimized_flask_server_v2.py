@@ -7,6 +7,7 @@ import pandas as pd
 import os
 import random
 from pathlib import Path
+from datetime import datetime, timezone
 
 # Get the directory where the script is located
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -45,6 +46,15 @@ except ImportError:
             }
         return mock_data, set()
 
+# --- Database Integration ---
+from database import pool, create_tables
+# --------------------------
+
+# --- Candle Aggregation ---
+live_candles = {} # Holds the current 1-min candle data for each symbol
+# Example: {'NSE:RELIANCE-EQ': {'timestamp': ..., 'open': ..., 'high': ..., 'low': ..., 'close': ..., 'volume': ...}}
+# --------------------------
+
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your-trading-dashboard-secret'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
@@ -54,6 +64,31 @@ symbols_data = {}
 csv_data = {}
 websocket_started = False
 connected_clients = set()
+active_alerts = [] # To store active alerts
+alert_id_counter = 0 # Simple counter for unique alert IDs
+
+# --- Database Writing Helper ---
+def save_candle_to_db(symbol, candle_data):
+    """Saves a completed candle to the PostgreSQL database."""
+    try:
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO candles_1min (symbol, timestamp, open, high, low, close, volume)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (symbol, timestamp) DO NOTHING;
+                """, (
+                    symbol,
+                    candle_data['timestamp'],
+                    candle_data['open'],
+                    candle_data['high'],
+                    candle_data['low'],
+                    candle_data['close'],
+                    candle_data['volume']
+                ))
+    except Exception as e:
+        print(f"Error saving candle for {symbol}: {e}")
+# -----------------------------
 
 def load_csv_data():
     """Load static data from CSV file with proper error handling"""
@@ -187,6 +222,7 @@ def start_fyers_websocket():
 def data_stream_thread():
     """Background thread to stream data to clients with optimized updates and strategy grouping"""
     last_emission = {}
+    first_data_received = False # Flag for one-time message
     
     while True:
         try:
@@ -196,6 +232,69 @@ def data_stream_thread():
                 
             ltp_data, invalid_symbols = get_ltp_data()
             
+            # --- One-time check to confirm data stream is live ---
+            if ltp_data and not first_data_received:
+                print("✅ First data packet received from Fyers WebSocket. Data stream is live.")
+                first_data_received = True
+            # ----------------------------------------------------
+
+            # --- Candle Aggregation Logic ---
+            current_utc_time = datetime.now(timezone.utc)
+            current_minute_timestamp = current_utc_time.replace(second=0, microsecond=0)
+
+            for symbol, data in ltp_data.items():
+                if not isinstance(data, dict) or 'ltp' not in data:
+                    continue
+
+                ltp = data.get('ltp', 0)
+                # --- Check for alerts on this tick ---
+                check_alerts(symbol, ltp)
+                # -------------------------------------
+
+                # Use 'vol_traded_today' as Fyers WS provides this
+                total_volume = data.get('vol_traded_today', 0)
+
+                if symbol not in live_candles:
+                    # First tick for this symbol this run
+                    live_candles[symbol] = {
+                        "timestamp": current_minute_timestamp,
+                        "open": ltp,
+                        "high": ltp,
+                        "low": ltp,
+                        "close": ltp,
+                        "start_volume": total_volume, # Store volume at the start of the candle
+                        "volume": 0 # This will be the calculated volume for the minute
+                    }
+                else:
+                    # Existing symbol, check if minute has changed
+                    last_candle = live_candles[symbol]
+                    if last_candle['timestamp'] < current_minute_timestamp:
+                        # Minute has rolled over, finalize and save the old candle
+                        last_candle['volume'] = total_volume - last_candle['start_volume']
+                        if last_candle['volume'] < 0: last_candle['volume'] = 0 # In case of reset
+                        
+                        save_candle_to_db(symbol, last_candle)
+                        
+                        # Start a new candle
+                        live_candles[symbol] = {
+                            "timestamp": current_minute_timestamp,
+                            "open": ltp,
+                            "high": ltp,
+                            "low": ltp,
+                            "close": ltp,
+                            "start_volume": total_volume,
+                            "volume": 0
+                        }
+                    else:
+                        # Update the current candle
+                        last_candle['high'] = max(last_candle['high'], ltp)
+                        last_candle['low'] = min(last_candle['low'], ltp)
+                        last_candle['close'] = ltp
+                        # Volume is calculated at the end of the minute
+                        current_candle_volume = total_volume - last_candle['start_volume']
+                        last_candle['volume'] = current_candle_volume if current_candle_volume >= 0 else 0
+            # ----------------------------------
+            
             if ltp_data:
                 # This will hold the data grouped by strategy
                 processed_data_by_strategy = {}
@@ -203,11 +302,14 @@ def data_stream_thread():
                 
                 for symbol, data in ltp_data.items():
                     if isinstance(data, dict):
+                        # --- FIX: Use 'chp' from Fyers for change percentage ---
+                        change_percent = data.get('chp', 0)
+                        
                         # Combine live data with static CSV data
                         combined_data = {
                             'symbol': symbol,
                             'ltp': data.get('ltp', 0),
-                            'change': data.get('chp', 0),
+                            'change': change_percent, # Use reliable value from API
                             'volume': data.get('vol_traded_today', 0),
                             'high': data.get('high_price', 0),
                             'low': data.get('low_price', 0),
@@ -309,8 +411,10 @@ def handle_connect():
 @socketio.on('disconnect')
 def handle_disconnect():
     """Handle client disconnection"""
-    print(f'Client disconnected: {request.sid}')
-    connected_clients.discard(request.sid)
+    global connected_clients
+    if request.sid in connected_clients:
+        connected_clients.remove(request.sid)
+    print(f"Client disconnected: {request.sid}. Total clients: {len(connected_clients)}")
 
 @socketio.on('request_initial_data')
 def handle_initial_data():
@@ -333,10 +437,13 @@ def handle_initial_data():
         # Combine with latest LTP data if available
         live_data = ltp_data.get(symbol, {})
         
+        # --- FIX: Use 'chp' from Fyers for change percentage ---
+        change_percent = live_data.get('chp', 0)
+
         combined_data = {
             'symbol': symbol,
             'ltp': live_data.get('ltp', 0),
-            'change': live_data.get('chp', 0),
+            'change': change_percent, # Use reliable value from API
             'volume': live_data.get('vol_traded_today', 0),
             'high': live_data.get('high_price', 0),
             'low': live_data.get('low_price', 0),
@@ -371,8 +478,8 @@ def handle_initial_data():
 @socketio.on('pause_updates')
 def handle_pause_updates(data):
     """Handle pause/resume updates request"""
-    # This could be used to manage per-client update preferences
-    print(f"Client {request.sid} requested pause: {data.get('paused', False)}")
+    # This feature is not fully implemented in this version
+    print(f"Pause/Resume request for {data.get('symbols')}, status: {data.get('pause')}")
 
 def create_mock_data():
     """Create mock data if real WebSocket is not available"""
@@ -393,35 +500,132 @@ def create_mock_data():
     print(f"Created mock data for {len(mock_symbols)} symbols")
 
 def start_server_process():
-    """Initializes and runs the Flask-SocketIO server."""
-    # Try to start Fyers WebSocket, fall back to mock data if needed
-    websocket_success = start_fyers_websocket()
+    """Main entry point to start the server"""
+    print("Starting server process...")
     
-    # This check ensures mock data if websocket fails AND no CSV was loaded.
-    if not websocket_success and not csv_data: 
-        print("Failed to start Fyers WebSocket and no CSV data, creating mock data as a last resort...")
-        create_mock_data()
+    # --- Initialize Database ---
+    print("Initializing database...")
+    create_tables()
+    # ---------------------------
+
+    # Start the Fyers WebSocket in a background thread
+    if fyers_available:
+        websocket_thread = threading.Thread(target=start_fyers_websocket, daemon=True)
+        websocket_thread.start()
+        print("Fyers WebSocket thread started.")
+
+    # Start the main data streaming thread
+    stream_thread = threading.Thread(target=data_stream_thread, daemon=True)
+    stream_thread.start()
+    print("Data streaming thread started.")
     
-    # Start data streaming thread
-    data_thread = threading.Thread(target=data_stream_thread, daemon=True)
-    data_thread.start()
-    
-    print("=" * 60)
-    print("🚀 OPTIMIZED TRADING DASHBOARD SERVER STARTING")
-    print("=" * 60)
-    print(f"Dashboard URL: http://localhost:5000")
-    print(f"WebSocket Status: {'✅ Connected' if websocket_started else '⚠️  Mock Data'}")
-    print(f"Symbols Loaded: {len(csv_data)}")
-    print("=" * 60)
-    
-    # Run the Flask-SocketIO server
-    socketio.run(
-        app, 
-        host='0.0.0.0', 
-        port=5000, 
-        debug=False, # Set to True for more detailed server logs if needed during dev
-        allow_unsafe_werkzeug=True # Keep this if necessary for your setup
-    )
+    # Start Flask-SocketIO server
+    print("Starting Flask-SocketIO server on http://0.0.0.0:5000")
+    socketio.run(app, host='0.0.0.0', port=5000)
+
+# --- Alert Checking Logic ---
+def check_alerts(symbol, ltp):
+    """Checks the live price against active alerts."""
+    global active_alerts
+    for alert in active_alerts:
+        # Check if symbol matches and alert is not yet triggered
+        if alert['symbol'] == symbol and not alert.get('triggered', False):
+            condition_met = False
+            try:
+                # Safely convert to float for comparison
+                live_price = float(ltp)
+                alert_value = float(alert['value'])
+                
+                op = alert['operator']
+                if op == '>' and live_price > alert_value:
+                    condition_met = True
+                elif op == '<' and live_price < alert_value:
+                    condition_met = True
+                elif op == '>=' and live_price >= alert_value:
+                    condition_met = True
+                elif op == '<=' and live_price <= alert_value:
+                    condition_met = True
+            
+            except (ValueError, TypeError) as e:
+                print(f"Could not compare prices for alert {alert['id']}: {e}")
+                continue
+
+            if condition_met:
+                print(f"🎉 ALERT TRIGGERED: {alert['symbol']} {alert['operator']} {alert['value']}")
+                alert['triggered'] = True # Mark as triggered to avoid repeat notifications
+                # Notify all clients about the triggered alert
+                socketio.emit('alert_triggered', alert)
+                # Also broadcast the updated list of alerts (with the triggered flag)
+                socketio.emit('update_alerts', active_alerts)
+
+# --- Alert Management Sockets ---
+@socketio.on('get_alerts')
+def handle_get_alerts():
+    """Client requests the current list of alerts."""
+    emit('update_alerts', active_alerts)
+
+@socketio.on('create_alert')
+def handle_create_alert(data):
+    """Handles creation of a new alert."""
+    global active_alerts, alert_id_counter
+    try:
+        alert_id_counter += 1
+        new_alert = {
+            "id": alert_id_counter,
+            "symbol": f"NSE:{data['symbol'].upper()}-EQ",
+            "operator": data['operator'],
+            "value": float(data['value']),
+            "triggered": False
+        }
+        active_alerts.append(new_alert)
+        print(f"Alert created: {new_alert}")
+        # Broadcast the full updated list to all clients
+        socketio.emit('update_alerts', active_alerts)
+    except (KeyError, ValueError) as e:
+        print(f"Error creating alert. Invalid data: {data}. Error: {e}")
+
+@socketio.on('update_alert')
+def handle_update_alert(data):
+    """Handles updating an existing alert."""
+    global active_alerts
+    try:
+        alert_id = data.get('id')
+        if not alert_id:
+            return
+
+        for alert in active_alerts:
+            if alert['id'] == alert_id:
+                alert['operator'] = data.get('operator', alert['operator'])
+                alert['value'] = float(data.get('value', alert['value']))
+                alert['triggered'] = False # Reset trigger status on update
+                print(f"Alert updated: {alert}")
+                break
+        
+        # Broadcast the full updated list to all clients
+        socketio.emit('update_alerts', active_alerts)
+    except (KeyError, ValueError) as e:
+        print(f"Error updating alert. Invalid data: {data}. Error: {e}")
+
+@socketio.on('delete_alert')
+def handle_delete_alert(data):
+    """Handles deletion of an alert by its ID."""
+    global active_alerts
+    try:
+        alert_id = data.get('id')
+        if not alert_id:
+            return
+
+        initial_len = len(active_alerts)
+        active_alerts = [alert for alert in active_alerts if alert.get('id') != alert_id]
+        
+        if len(active_alerts) < initial_len:
+            print(f"Alert with ID {alert_id} deleted.")
+        
+        # Broadcast the full updated list to all clients
+        socketio.emit('update_alerts', active_alerts)
+    except KeyError as e:
+        print(f"Error deleting alert. Invalid data: {data}. Error: {e}")
+# --------------------------------
 
 if __name__ == '__main__':
     # This block now just calls the main server function.
