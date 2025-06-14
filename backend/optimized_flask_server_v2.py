@@ -7,7 +7,8 @@ import pandas as pd
 import os
 import random
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from collections import deque
 
 # Get the directory where the script is located
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -55,7 +56,7 @@ live_candles = {} # Holds the current 1-min candle data for each symbol
 # Example: {'NSE:RELIANCE-EQ': {'timestamp': ..., 'open': ..., 'high': ..., 'low': ..., 'close': ..., 'volume': ...}}
 # --------------------------
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder='../frontend/trading-dashboard/build', static_url_path='/')
 app.config['SECRET_KEY'] = 'your-trading-dashboard-secret'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
@@ -66,6 +67,41 @@ websocket_started = False
 connected_clients = set()
 active_alerts = [] # To store active alerts
 alert_id_counter = 0 # Simple counter for unique alert IDs
+
+# In-memory set to track stocks that have already triggered a PDH cross alert today
+pdh_crossed_stocks = set()
+
+# System alert history storage
+system_alert_history = []
+
+# Set to track stocks that have already triggered a 5-min positive candle alert today
+positive_5min_alerted_stocks = set()
+
+# Dictionary to store recent volume history for spike detection
+# {'NSE:RELIANCE-EQ': deque([vol1, vol2, ...], maxlen=10)}
+volume_history = {}
+
+# Dictionary to store average intraday volume profiles
+# {'NSE:RELIANCE-EQ': {'09:15': 15000, '09:16': 25000, ...}}
+avg_volume_profiles = {}
+
+# --- Client Alert Settings ---
+# Stores the current alert settings from the client. Defaults to all on.
+client_alert_settings = {
+    'pdh_cross': True,
+    'positive_5min_open': True,
+    'volume_spike': True,
+}
+# -----------------------------
+
+# --- Formatting Helper ---
+def format_volume(vol):
+    """Formats volume into a human-readable string (e.g., 1.2M, 450K)."""
+    if vol >= 1_000_000:
+        return f"{vol / 1_000_000:.2f}M"
+    if vol >= 1_000:
+        return f"{vol / 1_000:.1f}K"
+    return str(vol)
 
 # --- Database Writing Helper ---
 def save_candle_to_db(symbol, candle_data):
@@ -213,11 +249,76 @@ def start_fyers_websocket():
                 print("Fyers WebSocket started successfully")
                 return True
             else:
-                print("No symbols loaded, cannot start WebSocket")
+                print("Warning: No symbols to start WebSocket with, using mock data if configured")
+                if not csv_data: create_mock_data() # Ensure mock data if symbols are empty
                 return False
         except Exception as e:
-            print(f"Error starting WebSocket: {e}")
+            print(f"Failed to start Fyers WebSocket: {e}")
+            websocket_started = False
+            if not csv_data: create_mock_data() # Fallback to mock data if WS fails
             return False
+    return True
+
+# --- System Alert Logic ---
+def check_for_pdh_cross(symbol, ltp, pdh):
+    """Check if the ltp has crossed the Previous Day High and trigger an alert."""
+    # Only trigger if the alert type is enabled by the client
+    if not client_alert_settings.get('pdh_cross', True):
+        return
+
+    if symbol not in pdh_crossed_stocks and pdh and ltp > pdh:
+        pdh_crossed_stocks.add(symbol)
+        message = f"Price crossed PDH ({pdh:.2f})"
+        alert = {
+            "id": f"sys_{symbol}_pdh_{int(time.time())}",
+            "symbol": symbol,
+            "type": "PDH Crossed",
+            "message": message,
+            "timestamp": datetime.now().isoformat()
+        }
+        system_alert_history.insert(0, alert)
+        socketio.emit('system_alert_triggered', alert)
+        print(f"🔔 SYSTEM ALERT: {symbol} - {message}")
+
+def check_for_volume_spike(symbol, candle_data):
+    """Checks for volume spikes and emits an alert if conditions are met."""
+    global system_alert_history
+
+    # Only trigger if the alert type is enabled by the client
+    if not client_alert_settings.get('volume_spike', True):
+        return
+
+    # User-defined parameters for volume spike
+    lookback_period = 10  # minutes
+    threshold_multiplier = 2.5
+
+    # Update history
+    if symbol not in volume_history:
+        volume_history[symbol] = deque(maxlen=lookback_period)
+    volume_history[symbol].append(candle_data['volume'])
+
+    # Check for spike
+    if len(volume_history[symbol]) == lookback_period:
+        current_volume = volume_history[symbol][-1]
+        # Calculate average of the PREVIOUS volumes (excluding current)
+        previous_volumes = list(volume_history[symbol])[:-1]
+        if not previous_volumes: return
+
+        avg_volume = sum(previous_volumes) / len(previous_volumes)
+        
+        if avg_volume > 0 and current_volume > (avg_volume * threshold_multiplier):
+            message = f"Volume spike: {format_volume(current_volume)} vs avg {format_volume(avg_volume)}"
+            alert = {
+                "id": f"sys_{symbol}_vol_{int(time.time())}",
+                "symbol": symbol,
+                "type": "Volume Spike",
+                "message": message,
+                "timestamp": datetime.now().isoformat()
+            }
+            system_alert_history.insert(0, alert)
+            socketio.emit('system_alert_triggered', alert)
+            print(f"🔔 SYSTEM ALERT: {symbol} - {message}")
+
 
 def data_stream_thread():
     """Background thread to stream data to clients with optimized updates and strategy grouping"""
@@ -243,73 +344,53 @@ def data_stream_thread():
             current_minute_timestamp = current_utc_time.replace(second=0, microsecond=0)
 
             for symbol, data in ltp_data.items():
-                if not isinstance(data, dict) or 'ltp' not in data:
-                    continue
+                if not isinstance(data, dict): continue
 
                 ltp = data.get('ltp', 0)
-                # --- Check for alerts on this tick ---
-                check_alerts(symbol, ltp)
-                # -------------------------------------
+                vol = data.get('vol_traded_today', 0)
 
-                # Use 'vol_traded_today' as Fyers WS provides this
-                total_volume = data.get('vol_traded_today', 0)
+                # Initialize candle if it's the first tick for this minute
+                if symbol not in live_candles or live_candles[symbol]['timestamp'] != current_minute_timestamp:
+                    # Before creating a new candle, check if the old one should be finalized
+                    if symbol in live_candles:
+                        old_candle = live_candles[symbol]
+                        save_candle_to_db(symbol, old_candle)
+                        # --- Trigger Volume Spike check on candle close ---
+                        check_for_volume_spike(symbol, old_candle)
+                        # --------------------------------------------------
 
-                if symbol not in live_candles:
-                    # First tick for this symbol this run
                     live_candles[symbol] = {
-                        "timestamp": current_minute_timestamp,
-                        "open": ltp,
-                        "high": ltp,
-                        "low": ltp,
-                        "close": ltp,
-                        "start_volume": total_volume, # Store volume at the start of the candle
-                        "volume": 0 # This will be the calculated volume for the minute
+                        'timestamp': current_minute_timestamp,
+                        'open': ltp,
+                        'high': ltp,
+                        'low': ltp,
+                        'close': ltp,
+                        'volume': 0, # Volume for the candle starts at 0
+                        'last_total_volume': vol 
                     }
-                else:
-                    # Existing symbol, check if minute has changed
-                    last_candle = live_candles[symbol]
-                    if last_candle['timestamp'] < current_minute_timestamp:
-                        # Minute has rolled over, finalize and save the old candle
-                        last_candle['volume'] = total_volume - last_candle['start_volume']
-                        if last_candle['volume'] < 0: last_candle['volume'] = 0 # In case of reset
-                        
-                        save_candle_to_db(symbol, last_candle)
-                        
-                        # Start a new candle
-                        live_candles[symbol] = {
-                            "timestamp": current_minute_timestamp,
-                            "open": ltp,
-                            "high": ltp,
-                            "low": ltp,
-                            "close": ltp,
-                            "start_volume": total_volume,
-                            "volume": 0
-                        }
-                    else:
-                        # Update the current candle
-                        last_candle['high'] = max(last_candle['high'], ltp)
-                        last_candle['low'] = min(last_candle['low'], ltp)
-                        last_candle['close'] = ltp
-                        # Volume is calculated at the end of the minute
-                        current_candle_volume = total_volume - last_candle['start_volume']
-                        last_candle['volume'] = current_candle_volume if current_candle_volume >= 0 else 0
-            # ----------------------------------
-            
-            if ltp_data:
-                # This will hold the data grouped by strategy
-                processed_data_by_strategy = {}
-                current_time = time.time()
                 
-                for symbol, data in ltp_data.items():
+                # Update the current candle
+                candle = live_candles[symbol]
+                candle['high'] = max(candle['high'], ltp)
+                candle['low'] = min(candle['low'], ltp)
+                candle['close'] = ltp
+                
+                # Volume for the candle is the change in total volume
+                if vol >= candle['last_total_volume']:
+                    candle['volume'] += (vol - candle['last_total_volume'])
+                candle['last_total_volume'] = vol
+            # --- End Candle Aggregation ---
+
+            processed_data = {}
+            current_time = time.time()
+                
+            for symbol, data in ltp_data.items():
                     if isinstance(data, dict):
-                        # --- FIX: Use 'chp' from Fyers for change percentage ---
-                        change_percent = data.get('chp', 0)
-                        
                         # Combine live data with static CSV data
                         combined_data = {
                             'symbol': symbol,
                             'ltp': data.get('ltp', 0),
-                            'change': change_percent, # Use reliable value from API
+                        'change': data.get('chp', 0),
                             'volume': data.get('vol_traded_today', 0),
                             'high': data.get('high_price', 0),
                             'low': data.get('low_price', 0),
@@ -320,87 +401,75 @@ def data_stream_thread():
                         symbol_static_data = csv_data.get(symbol, {})
                         combined_data.update(symbol_static_data)
                         
-                        # PDH Crossing Logic
+                    # --- PDH Crossing Check ---
                         pdh_value = symbol_static_data.get('pdh', 0.0)
-                        current_ltp = combined_data.get('ltp', 0.0)
-                        crossed_pdh_status = '-'
-                        pdh_alert = False
+                    if pdh_value:
+                        check_for_pdh_cross(symbol, combined_data['ltp'], pdh_value)
+                    
+                    # --- RVol Calculation ---
+                    current_dt = datetime.fromtimestamp(current_time)
+                    time_key = current_dt.strftime('%H:%M')
+                    if symbol in avg_volume_profiles and time_key in avg_volume_profiles[symbol]:
+                        avg_vol = avg_volume_profiles[symbol][time_key]
+                        current_candle_vol = live_candles.get(symbol, {}).get('volume', 0)
+                        if avg_vol > 0:
+                            combined_data['rvol'] = round(current_candle_vol / avg_vol, 2)
 
-                        if pdh_value > 0:
-                            crossed_pdh_status = 'yes' if current_ltp > pdh_value else 'no'
-                            last_symbol_data = last_emission.get(symbol, {})
-                            previous_ltp = last_symbol_data.get('ltp')
-                            
-                            if previous_ltp is not None and previous_ltp <= pdh_value and current_ltp > pdh_value:
-                                pdh_alert = True
-                        
-                        combined_data['pdh'] = pdh_value
-                        combined_data['crossed_pdh'] = crossed_pdh_status
-                        combined_data['pdh_alert'] = pdh_alert
-                        
-                        # Check if data has changed significantly
-                        last_data = last_emission.get(symbol, {})
-                        if (not last_data or 
-                            abs(combined_data.get('ltp', 0) - last_data.get('ltp', 0)) > 0.01 or
-                            abs(combined_data.get('change', 0) - last_data.get('change', 0)) > 0.01 or
-                            pdh_alert):
+                    # --- Alert Check ---
+                    check_alerts(symbol, combined_data['ltp'])
+                    
+                    processed_data[symbol] = combined_data
 
-                            # Group by strategy, splitting comma-separated strategies
-                            raw_strategy = symbol_static_data.get('chartStrategy', 'Uncategorized')
-                            strategies = [s.strip() for s in raw_strategy.split(',')]
+            # Check for changes and emit only if data has changed since last emission
+            changed_data = {}
+            for symbol, data in processed_data.items():
+                last_sent = last_emission.get(symbol)
+                if last_sent != data:
+                    changed_data[symbol] = data
+                    last_emission[symbol] = data
 
-                            for strategy in strategies:
-                                if not strategy: continue # Skip empty strings
-                                if strategy not in processed_data_by_strategy:
-                                    processed_data_by_strategy[strategy] = {}
-                                
-                                processed_data_by_strategy[strategy][symbol] = combined_data
-                            
-                            last_emission[symbol] = combined_data.copy()
+            if changed_data:
+                # Group data by strategy before emitting
+                grouped_updates = {}
+                for symbol, data in changed_data.items():
+                    strategies = data.get('chartStrategy', '').split(',')
+                    strategies = [s.strip() for s in strategies if s.strip()]
+                    if not strategies:
+                        strategies = ['Uncategorized']
 
-                if processed_data_by_strategy:
-                    socketio.emit('stock_update', processed_data_by_strategy)
-            
-            # Reduce sleep time for more frequent updates if needed
-            time.sleep(1) # Emits updates every 1 second if there are changes
+                    for strategy in strategies:
+                        if strategy not in grouped_updates:
+                            grouped_updates[strategy] = {}
+                        grouped_updates[strategy][symbol] = data
 
+                if grouped_updates:
+                    socketio.emit('data_update', grouped_updates)
+                    
+            if invalid_symbols:
+                socketio.emit('invalid_symbols', {'symbols': list(invalid_symbols)})
+
+            time.sleep(1) # Main loop delay
         except Exception as e:
             print(f"Error in data stream thread: {e}")
-            time.sleep(5) # Avoid rapid-fire errors
+            import traceback
+            traceback.print_exc()
+            time.sleep(5)
 
-@app.route('/api/columns')
-def get_columns():
-    """Get available columns from CSV"""
-    if csv_data:
-        sample_data = next(iter(csv_data.values()))
-        columns = ['symbol', 'ltp', 'change', 'volume', 'high', 'low', 'open'] + list(sample_data.keys())
-        # Ensure new keys are in the columns list for /api/columns if they aren't dynamically added from sample_data
-        if 'pdh' not in columns: columns.append('pdh')
-        if 'crossed_pdh' not in columns: columns.append('crossed_pdh')
-        return json.dumps(list(dict.fromkeys(columns))) # Ensure unique columns
-    return json.dumps(['symbol', 'ltp', 'change', 'volume', 'high', 'low', 'open', 'pdh', 'crossed_pdh'])
 
-@app.route('/api/stats')
-def get_stats():
-    """Get dashboard statistics"""
-    try:
-        ltp_data, invalid_symbols = get_ltp_data()
-        total_symbols = len(csv_data)
-        active_symbols = len(ltp_data)
-        invalid_count = len(invalid_symbols)
-        
-        return json.dumps({
-            'total_symbols': total_symbols,
-            'active_symbols': active_symbols,
-            'invalid_symbols': invalid_count,
-            'status': 'connected' if websocket_started else 'disconnected'
-        })
-    except Exception as e:
-        return json.dumps({
-            'error': str(e),
-            'status': 'error'
-        })
+# --- API / Static File Routes ---
+@app.route('/')
+def index():
+    return send_from_directory(app.static_folder, 'index.html')
 
+@app.route('/<path:path>')
+def serve_static(path):
+    if path != "" and os.path.exists(os.path.join(app.static_folder, path)):
+        return send_from_directory(app.static_folder, path)
+    else:
+        return send_from_directory(app.static_folder, 'index.html')
+
+
+# --- SocketIO Handlers ---
 @socketio.on('connect')
 def handle_connect():
     """Handle client connection"""
@@ -418,52 +487,28 @@ def handle_disconnect():
 
 @socketio.on('request_initial_data')
 def handle_initial_data():
-    """Handle request for initial full data set, grouped by strategy."""
-    print(f"Client {request.sid} requested initial data.")
+    """Sends the entire dataset, structured by strategy, to a newly connected client."""
     
-    # Ensure CSV data is loaded before proceeding
-    if not csv_data:
-        print("Warning: Initial data requested but CSV data is not loaded.")
-        load_csv_data() 
-    
-    initial_data_by_strategy = {}
-    
-    # Get the latest LTP data to ensure we send current prices
-    ltp_data, _ = get_ltp_data()
-
-    for symbol, static_info in csv_data.items():
-        strategy = static_info.get('chartStrategy', 'Uncategorized')
-        
-        # Combine with latest LTP data if available
-        live_data = ltp_data.get(symbol, {})
-        
-        # --- FIX: Use 'chp' from Fyers for change percentage ---
-        change_percent = live_data.get('chp', 0)
-        
+    # Process the full csv_data to match the live data structure
+    initial_full_data = {}
+    for symbol, static_data in csv_data.items():
+        # Create a combined data structure similar to the live one
         combined_data = {
             'symbol': symbol,
-            'ltp': live_data.get('ltp', 0),
-            'change': change_percent, # Use reliable value from API
-            'volume': live_data.get('vol_traded_today', 0),
-            'high': live_data.get('high_price', 0),
-            'low': live_data.get('low_price', 0),
-            'open': live_data.get('open_price', 0)
+            'ltp': 0, 'change': 0, 'volume': 0,
+            'high': 0, 'low': 0, 'open': 0,
+            'last_update': 0
         }
-        combined_data.update(static_info)
-        
-        # Add PDH status for initial load
-        pdh_value = static_info.get('pdh', 0.0)
-        current_ltp = combined_data.get('ltp', 0.0)
-        crossed_pdh_status = '-'
-        if pdh_value > 0:
-            crossed_pdh_status = 'yes' if current_ltp > pdh_value else 'no'
-        combined_data['pdh'] = pdh_value
-        combined_data['crossed_pdh'] = crossed_pdh_status
-        combined_data['pdh_alert'] = False # No alert on initial load
+        combined_data.update(static_data)
+        initial_full_data[symbol] = combined_data
 
-        # Group by strategy, splitting comma-separated strategies
-        raw_strategy = static_info.get('chartStrategy', 'Uncategorized')
-        strategies = [s.strip() for s in raw_strategy.split(',')]
+    # Group initial data by strategy
+    initial_data_by_strategy = {}
+    for symbol, data in initial_full_data.items():
+        strategies = data.get('chartStrategy', '').split(',')
+        strategies = [s.strip() for s in strategies if s.strip()]
+        if not strategies:
+            strategies = ['Uncategorized']
 
         for strategy in strategies:
             if not strategy: continue # Skip empty strings
@@ -475,29 +520,25 @@ def handle_initial_data():
     emit('initial_data', initial_data_by_strategy)
     print(f"Sent initial data for {len(initial_data_by_strategy)} strategies to client {request.sid}.")
 
-@socketio.on('pause_updates')
-def handle_pause_updates(data):
-    """Handle pause/resume updates request"""
-    # This feature is not fully implemented in this version
-    print(f"Pause/Resume request for {data.get('symbols')}, status: {data.get('pause')}")
 
 def create_mock_data():
-    """Create mock data if real WebSocket is not available"""
-    mock_symbols = ['RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'HINDUNILVR', 'ICICIBANK', 'BHARTIARTL', 'ITC', 'KOTAKBANK', 'LT']
-    
+    """Creates mock data if CSV is not found"""
+    global csv_data
+    mock_symbols = ['NSE:RELIANCE-EQ', 'NSE:TCS-EQ', 'NSE:HDFCBANK-EQ', 'NSE:INFY-EQ', 'NSE:HINDUNILVR-EQ']
+    strategies = ['Morning', 'Mid-day', 'Afternoon']
     for symbol in mock_symbols:
-        wsym = f"NSE:{symbol}-EQ"
-        csv_data[wsym] = {
-            'chartScore': 7.5,
-            'announcement': 'yes',
-            'premarket': 'yes',
-            'prevRange': 'yes',
-            'gap': round((random.random() - 0.5) * 10, 2),
-            'pdc': 'yes' if random.random() > 0.5 else 'no',
-            'description': 'Mock data for testing'
+        csv_data[symbol] = {
+            'newsWeight': random.choice([0, 1, 2, 3]),
+            'chartStrategy': random.choice(strategies),
+            'description': 'Mock announcement',
+            'premarket': random.choice(['yes', 'no']),
+            'sopen': random.choice(['yes', 'no']),
+            'gap': round(random.uniform(-5, 5), 2),
+            'spdc': random.choice(['yes', 'no']),
+            'pdh': round(random.uniform(100, 3000) * 1.05, 2),
+            'announcement': 'yes'
         }
-    
-    print(f"Created mock data for {len(mock_symbols)} symbols")
+    print(f"Created mock data for {len(mock_symbols)} symbols.")
 
 def start_server_process():
     """Main entry point to start the server"""
@@ -507,6 +548,10 @@ def start_server_process():
     print("Initializing database...")
     create_tables()
     # ---------------------------
+
+    # --- Pre-calculate RVol Profiles ---
+    calculate_average_intraday_volume(lookback_days=10)
+    # -----------------------------------
 
     # Start the Fyers WebSocket in a background thread
     if fyers_available:
@@ -519,43 +564,41 @@ def start_server_process():
     stream_thread.start()
     print("Data streaming thread started.")
     
+    # Schedule the 5-minute candle check
+    schedule_5min_candle_check()
+    
     # Start Flask-SocketIO server
     print("Starting Flask-SocketIO server on http://0.0.0.0:5000")
     socketio.run(app, host='0.0.0.0', port=5000)
 
-# --- Alert Checking Logic ---
 def check_alerts(symbol, ltp):
-    """Checks the live price against active alerts."""
+    """Check user-created alerts and emit if triggered."""
     global active_alerts
+    
+    triggered_this_tick = False
     for alert in active_alerts:
-        # Check if symbol matches and alert is not yet triggered
         if alert['symbol'] == symbol and not alert.get('triggered', False):
-            condition_met = False
-            try:
-                # Safely convert to float for comparison
-                live_price = float(ltp)
-                alert_value = float(alert['value'])
-                
-                op = alert['operator']
-                if op == '>' and live_price > alert_value:
-                    condition_met = True
-                elif op == '<' and live_price < alert_value:
-                    condition_met = True
-                elif op == '>=' and live_price >= alert_value:
-                    condition_met = True
-                elif op == '<=' and live_price <= alert_value:
-                    condition_met = True
+            operator = alert['operator']
+            value = alert['value']
             
-            except (ValueError, TypeError) as e:
-                print(f"Could not compare prices for alert {alert['id']}: {e}")
-                continue
+            condition_met = False
+            if operator == '>=' and ltp >= value:
+                    condition_met = True
+            elif operator == '<=' and ltp <= value:
+                    condition_met = True
 
             if condition_met:
-                print(f"🎉 ALERT TRIGGERED: {alert['symbol']} {alert['operator']} {alert['value']}")
-                alert['triggered'] = True # Mark as triggered to avoid repeat notifications
-                # Notify all clients about the triggered alert
-                socketio.emit('alert_triggered', alert)
-                # Also broadcast the updated list of alerts (with the triggered flag)
+                alert['triggered'] = True
+                print(f"🔔 ALERT: {symbol} {operator} {value} (LTP: {ltp})")
+                socketio.emit('alert_triggered', {
+                    'symbol': symbol,
+                    'message': f"LTP {ltp} {operator} {value}",
+                    'id': alert['id']
+                })
+                triggered_this_tick = True
+    
+    # If any alert was triggered, broadcast the updated list
+    if triggered_this_tick:
                 socketio.emit('update_alerts', active_alerts)
 
 # --- Alert Management Sockets ---
@@ -564,9 +607,26 @@ def handle_get_alerts():
     """Client requests the current list of alerts."""
     emit('update_alerts', active_alerts)
 
-@socketio.on('create_alert')
-def handle_create_alert(data):
-    """Handles creation of a new alert."""
+@socketio.on('get_system_alert_history')
+def handle_get_system_alert_history():
+    """Client requests the history of system-triggered alerts."""
+    emit('system_alert_history', system_alert_history)
+
+@socketio.on('update_alert_settings')
+def handle_update_alert_settings(settings):
+    """Client sends updated alert settings."""
+    global client_alert_settings
+    print(f"Received alert settings update from client: {settings}")
+    # Basic validation to ensure we only accept known keys
+    if isinstance(settings, dict):
+        for key in client_alert_settings:
+            if key in settings and isinstance(settings[key], bool):
+                client_alert_settings[key] = settings[key]
+    print(f"Updated alert settings: {client_alert_settings}")
+
+@socketio.on('add_alert')
+def handle_add_alert(data):
+    """Handles adding a new alert."""
     global active_alerts, alert_id_counter
     try:
         alert_id_counter += 1
@@ -583,28 +643,6 @@ def handle_create_alert(data):
         socketio.emit('update_alerts', active_alerts)
     except (KeyError, ValueError) as e:
         print(f"Error creating alert. Invalid data: {data}. Error: {e}")
-
-@socketio.on('update_alert')
-def handle_update_alert(data):
-    """Handles updating an existing alert."""
-    global active_alerts
-    try:
-        alert_id = data.get('id')
-        if not alert_id:
-            return
-
-        for alert in active_alerts:
-            if alert['id'] == alert_id:
-                alert['operator'] = data.get('operator', alert['operator'])
-                alert['value'] = float(data.get('value', alert['value']))
-                alert['triggered'] = False # Reset trigger status on update
-                print(f"Alert updated: {alert}")
-                break
-        
-        # Broadcast the full updated list to all clients
-        socketio.emit('update_alerts', active_alerts)
-    except (KeyError, ValueError) as e:
-        print(f"Error updating alert. Invalid data: {data}. Error: {e}")
 
 @socketio.on('delete_alert')
 def handle_delete_alert(data):
@@ -625,7 +663,156 @@ def handle_delete_alert(data):
         socketio.emit('update_alerts', active_alerts)
     except KeyError as e:
         print(f"Error deleting alert. Invalid data: {data}. Error: {e}")
-# --------------------------------
+
+# --- 5-Min Opening Candle Alert ---
+def check_positive_5min_candle_alert():
+    """Scheduled job to check for stocks with a positive 5-minute opening candle."""
+    global system_alert_history, positive_5min_alerted_stocks
+    print("Running scheduled 5-minute opening candle check...")
+
+    # Only run the check if the alert type is enabled by the client
+    if not client_alert_settings.get('positive_5min_open', True):
+        print("Positive 5-Min Open alert is disabled by client. Skipping check.")
+        return
+
+    # Get a database connection
+    conn = None
+    try:
+        conn = pool.connection()
+        with conn.cursor() as cur:
+            # Get the list of all unique symbols from the CSV data
+            all_symbols = list(csv_data.keys())
+            
+            # Define the time range for the first 5 minutes (9:15 to 9:19) for today
+            today = datetime.now().date()
+            start_time = datetime.combine(today, datetime.min.time()) + timedelta(hours=9, minutes=15)
+            end_time = start_time + timedelta(minutes=4) # Candles for 9:15, 9:16, 9:17, 9:18, 9:19
+
+            for symbol in all_symbols:
+                if symbol in positive_5min_alerted_stocks:
+                    continue # Skip if already alerted today
+
+                # Fetch the first 5 candles for the symbol
+                cur.execute("""
+                    SELECT open, high, low, close, timestamp FROM candles_1min
+                    WHERE symbol = %s AND timestamp BETWEEN %s AND %s
+                    ORDER BY timestamp ASC
+                    LIMIT 5;
+                """, (symbol, start_time, end_time))
+                
+                candles = cur.fetchall()
+
+                if len(candles) == 5:
+                    opening_price = candles[0][0] # Open of the first candle
+                    closing_price = candles[4][3] # Close of the fifth candle
+
+                    if closing_price > opening_price:
+                        # Mark as alerted and trigger the alert
+                        positive_5min_alerted_stocks.add(symbol)
+                        message = f"Positive 5-min open candle ({opening_price:.2f} -> {closing_price:.2f})"
+                        alert = {
+                            "id": f"sys_{symbol}_5min_{int(time.time())}",
+                            "symbol": symbol,
+                            "type": "Positive 5-Min Open",
+                            "message": message,
+                            "timestamp": datetime.now().isoformat()
+                        }
+                        system_alert_history.insert(0, alert)
+                        socketio.emit('system_alert_triggered', alert)
+                        print(f"🔔 SYSTEM ALERT: {symbol} - {message}")
+
+    except Exception as e:
+        print(f"Error checking 5-min candle alert: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+def schedule_5min_candle_check():
+    """Schedules the 5-min candle check to run daily at 9:20 AM."""
+    
+    def get_next_run_time():
+        now = datetime.now()
+        run_time_today = now.replace(hour=9, minute=20, second=0, microsecond=0)
+        if now > run_time_today:
+            # If it's past 9:20 AM, schedule for tomorrow
+            run_time_tomorrow = run_time_today + timedelta(days=1)
+            return run_time_tomorrow
+        return run_time_today
+
+    def schedule_job():
+        next_run = get_next_run_time()
+        delay = (next_run - datetime.now()).total_seconds()
+        print(f"Scheduling next 5-min candle check in {delay/3600:.2f} hours at {next_run}")
+        
+        # Using a Timer thread to run the check after the delay
+        threading.Timer(delay, run_and_reschedule).start()
+
+    def run_and_reschedule():
+        check_positive_5min_candle_alert()
+        # Reschedule for the next day
+        schedule_job()
+
+    print("Initial scheduling of 5-min candle check...")
+    schedule_job()
+# -----------------------------
+
+# --- RVol Calculation Setup ---
+def calculate_average_intraday_volume(lookback_days=10):
+    """
+    Calculates the average volume for each 1-minute interval of the trading day
+    based on the last `lookback_days` of data from the database.
+    """
+    global avg_volume_profiles
+    print("Calculating average intraday volume profiles...")
+    
+    conn = None
+    try:
+        conn = pool.connection()
+        with conn.cursor() as cur:
+            # Define the date range for the query
+            end_date = datetime.now().date()
+            start_date = end_date - timedelta(days=lookback_days)
+            
+            # SQL query to fetch time interval and average volume
+            cur.execute("""
+                SELECT
+                    symbol,
+                    to_char(timestamp, 'HH24:MI') AS minute_interval,
+                    AVG(volume) AS avg_volume
+                FROM
+                    candles_1min
+                WHERE
+                    timestamp::date >= %s
+                    AND timestamp::date < %s
+                GROUP BY
+                    symbol, minute_interval
+                ORDER BY
+                    symbol, minute_interval;
+            """, (start_date, end_date))
+            
+            rows = cur.fetchall()
+            
+            # Process the results into the desired structure
+            for row in rows:
+                symbol, minute_interval, avg_volume = row
+                if symbol not in avg_volume_profiles:
+                    avg_volume_profiles[symbol] = {}
+                avg_volume_profiles[symbol][minute_interval] = float(avg_volume)
+
+        print(f"✅ Successfully calculated RVol profiles for {len(avg_volume_profiles)} symbols.")
+        if avg_volume_profiles:
+            # Log a sample for verification
+            sample_symbol = next(iter(avg_volume_profiles))
+            sample_time = next(iter(avg_volume_profiles[sample_symbol]))
+            print(f"   Sample profile: {sample_symbol} @ {sample_time}: {avg_volume_profiles[sample_symbol][sample_time]:.2f} avg volume")
+
+    except Exception as e:
+        print(f"❌ Error calculating average intraday volume: {e}")
+    finally:
+        if conn:
+            conn.close()
+# --------------------------
+
 
 if __name__ == '__main__':
     # This block now just calls the main server function.
